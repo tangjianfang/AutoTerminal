@@ -32,21 +32,38 @@ TEST(TileEngine, TwoWindowsHalfAndHalf) {
 }
 
 TEST(TileEngine, ThreeWindows) {
+    // 3 terminals → 2x2 matrix: "2 on top, 1 on bottom, 1 empty"
     Layout l = compute_layout({0, 0, 1920, 1080}, 3, 0);
-    EXPECT_GE(l.rows * l.cols, 3);
+    EXPECT_EQ(l.rows, 2);
+    EXPECT_EQ(l.cols, 2);
+    EXPECT_EQ(l.rows * l.cols, 4);   // 4 cells, 3 filled + 1 empty
+    int total_area = 0;
+    for (auto& c : l.cells) total_area += c.w * c.h;
+    EXPECT_EQ(total_area, 1920 * 1080);
+}
+
+TEST(TileEngine, FiveWindows) {
+    // 5 terminals → 2x3 matrix: "3 on top, 2 on bottom, 1 empty"
+    Layout l = compute_layout({0, 0, 1920, 1080}, 5, 0);
+    EXPECT_EQ(l.rows, 2);
+    EXPECT_EQ(l.cols, 3);
+    EXPECT_EQ(l.rows * l.cols, 6);   // 6 cells, 5 filled + 1 empty
     int total_area = 0;
     for (auto& c : l.cells) total_area += c.w * c.h;
     EXPECT_EQ(total_area, 1920 * 1080);
 }
 
 TEST(TileEngine, EightWindows) {
+    // 8 terminals → 3x3 matrix (9 cells, 1 empty). The matrix-first rule
+    // prefers a balanced 3x3 over a tight 2x4 strip — even though the strip
+    // has slack 0 — so the user never sees single-row "column" layouts.
     Layout l = compute_layout({0, 0, 1920, 1080}, 8, 0);
-    EXPECT_GE(l.rows * l.cols, 8);
-    EXPECT_EQ(l.rows * l.cols, 8);   // exact fit: 2x4 or 4x2
+    EXPECT_EQ(l.rows, 3);
+    EXPECT_EQ(l.cols, 3);
+    EXPECT_EQ(l.rows * l.cols, 9);
     int total_area = 0;
     for (auto& c : l.cells) total_area += c.w * c.h;
     EXPECT_EQ(total_area, 1920 * 1080);
-    EXPECT_TRUE(l.rows == 2 || l.cols == 2);
 }
 
 TEST(TileEngine, NineWindows) {
