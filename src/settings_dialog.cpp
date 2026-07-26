@@ -39,6 +39,7 @@ enum CtrlId : WORD {
     IDC_OPEN_CONFIG_BTN,
     IDC_APPLY_BTN,
     IDC_CANCEL_BTN,
+    IDC_EXIT_BTN,
 };
 
 enum CaptureState { CapNone, CapTile, CapPause };
@@ -257,6 +258,12 @@ void DialogState::on_create(HWND h, HINSTANCE hinst) {
            right0 - 2 * btn_w_ - btn_gap, y, btn_w_, row_h);
     mk_btn(h, IDC_CANCEL_BTN,      L"Cancel",
            right0 - btn_w_, y, btn_w_, row_h);
+    // Exit button — leftmost, red-ish label so it stands out. Fallback for
+    // when the tray context menu is unavailable (icon hidden in overflow,
+    // shell notification dropped, etc.).
+    HWND exit_btn = mk_btn(h, IDC_EXIT_BTN, L"E&xit AutoTerminal",
+                            x + 150, y, 140, row_h);
+    (void)exit_btn;
     (void)btn_w_; (void)total_btns_w;
 
     populate_monitors();
@@ -337,6 +344,19 @@ void DialogState::on_command(WORD id, HWND /*ctrl*/) {
         case IDC_APPLY_BTN:        on_apply();   return;
         case IDC_CANCEL_BTN:       on_close();   return;
         case IDC_OPEN_CONFIG_BTN:  UIBridge::open_config_file(); return;
+        case IDC_EXIT_BTN: {
+            // Hide the dialog first so the user sees the desktop, then ask
+            // for confirmation — exiting kills the daemon with no undo.
+            AT_LOG_INFO("Settings: user clicked Exit AutoTerminal");
+            int rc = MessageBoxW(hwnd,
+                L"Exit AutoTerminal?\n\n"
+                L"This stops the background daemon. Tiling will no longer "
+                L"happen until you relaunch AutoTerminal.",
+                L"Exit AutoTerminal",
+                MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2);
+            if (rc == IDYES && cbs.on_exit) cbs.on_exit();
+            return;
+        }
         default: return;
     }
 }

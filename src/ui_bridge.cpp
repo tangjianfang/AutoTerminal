@@ -11,8 +11,9 @@ namespace autoterminal {
 
 namespace {
 
-constexpr UINT kHotkeyIdTile  = 1;
-constexpr UINT kHotkeyIdPause = 2;
+constexpr UINT kHotkeyIdTile    = 1;
+constexpr UINT kHotkeyIdPause   = 2;
+constexpr UINT kHotkeyIdSettings = 3;
 
 constexpr LPCWSTR kAutostartKey   = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr LPCWSTR kAutostartName = L"AutoTerminal";
@@ -244,14 +245,29 @@ void UIBridge::apply_config(const Config& cfg) {
 
 void UIBridge::on_tray_message(HWND /*hwnd*/, LPARAM lparam) {
     UINT msg = static_cast<UINT>(lparam);
-    AT_LOG_DEBUG("on_tray_message: lparam=0x%X", (unsigned)msg);
+    AT_LOG_INFO("on_tray_message: lparam=0x%X (msg=%s)",
+                (unsigned)msg,
+                msg == WM_LBUTTONDOWN  ? "LBUTTONDOWN"  :
+                msg == WM_LBUTTONUP    ? "LBUTTONUP"    :
+                msg == WM_LBUTTONDBLCLK? "LBUTTONDBLCLK":
+                msg == WM_RBUTTONDOWN  ? "RBUTTONDOWN"  :
+                msg == WM_RBUTTONUP    ? "RBUTTONUP"    :
+                msg == WM_RBUTTONDBLCLK? "RBUTTONDBLCLK":
+                msg == WM_CONTEXTMENU  ? "CONTEXTMENU"  :
+                msg == WM_MOUSEMOVE    ? "MOUSEMOVE"    : "OTHER");
     switch (msg) {
         case WM_RBUTTONUP:
         case WM_CONTEXTMENU:
+        case WM_RBUTTONDOWN:
             show_context_menu();
             break;
         case WM_LBUTTONDBLCLK:
             dispatch(TrayCmdTileNow);
+            break;
+        case WM_LBUTTONUP:
+            // Some shells send only LBUTTONUP — show the menu anyway, treating
+            // it as a single-click activation. Better to over-show than miss.
+            show_context_menu();
             break;
     }
 }

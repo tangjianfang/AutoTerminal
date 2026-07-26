@@ -14,6 +14,9 @@ struct SettingsCallbacks {
     std::function<void(const Config&)> on_apply;
     // Called when the user clicks "Cancel" or closes the window. Defaults to no-op.
     std::function<void()> on_close = []{};
+    // Called when the user clicks "Exit AutoTerminal". Use this as a fallback
+    // for terminating the daemon when the tray context menu is unavailable.
+    std::function<void()> on_exit = []{};
 };
 
 // Create the settings window (hidden by default). Returns the HWND or nullptr

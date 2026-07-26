@@ -251,6 +251,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR cmdline, int) {
                 autoterminal::UIBridge::set_autostart(g_config.autostart);
                 set_log_level(g_config.log_level);
                 AT_LOG_INFO("Settings applied via dialog");
+            },
+            .on_exit = [&]() {
+                AT_LOG_INFO("Exit requested via Settings dialog");
+                if (g_events) g_events->request_exit();
             }
         });
 
