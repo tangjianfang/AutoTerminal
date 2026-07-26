@@ -278,9 +278,15 @@ void UIBridge::apply_config(const Config& cfg) {
 }
 
 void UIBridge::on_tray_message(HWND /*hwnd*/, LPARAM lparam) {
-    UINT msg = static_cast<UINT>(lparam);
-    AT_LOG_INFO("on_tray_message: lparam=0x%X (msg=%s)",
-                (unsigned)msg,
+    // When NOTIFYICON_VERSION_4 is set, the shell ORs 0x00010000 into lParam
+    // before delivering the click callback. Mask the low word to recover
+    // the actual mouse/notification message. (Without this, every value
+    // reads as "OTHER" because WM_RBUTTONUP == 0x0205 never matches 0x10205.)
+    constexpr UINT kNotifyIconV4Mask = 0xFFFFu;
+    UINT raw    = static_cast<UINT>(lparam);
+    UINT msg    = raw & kNotifyIconV4Mask;
+    AT_LOG_INFO("on_tray_message: lparam=0x%X (msg=%s, v4=%s)",
+                raw,
                 msg == WM_LBUTTONDOWN  ? "LBUTTONDOWN"  :
                 msg == WM_LBUTTONUP    ? "LBUTTONUP"    :
                 msg == WM_LBUTTONDBLCLK? "LBUTTONDBLCLK":
@@ -288,7 +294,8 @@ void UIBridge::on_tray_message(HWND /*hwnd*/, LPARAM lparam) {
                 msg == WM_RBUTTONUP    ? "RBUTTONUP"    :
                 msg == WM_RBUTTONDBLCLK? "RBUTTONDBLCLK":
                 msg == WM_CONTEXTMENU  ? "CONTEXTMENU"  :
-                msg == WM_MOUSEMOVE    ? "MOUSEMOVE"    : "OTHER");
+                msg == WM_MOUSEMOVE    ? "MOUSEMOVE"    : "OTHER",
+                (raw & ~kNotifyIconV4Mask) ? "yes" : "no");
     switch (msg) {
         case WM_RBUTTONUP:
         case WM_CONTEXTMENU:
