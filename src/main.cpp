@@ -94,6 +94,36 @@ void on_command(autoterminal::EventSource::Command cmd) {
     }
 }
 
+// Force a window to the foreground, working around Win10/11's foreground-lock:
+//   1. attach our thread to the current FG thread (so SetForegroundWindow is
+//      allowed to take FG even if another process is currently FG);
+//   2. SetForegroundWindow;
+//   3. briefly take TOPMOST then drop back to NOTOPMOST — this Win32 trick
+//      forces a z-order promotion that the FG-lock normally blocks.
+void force_foreground(HWND target) {
+    if (!target) return;
+
+    ShowWindow(target, SW_SHOWNORMAL);
+
+    HWND fg = GetForegroundWindow();
+    DWORD fg_tid = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
+    DWORD our_tid = GetCurrentThreadId();
+    bool attached = false;
+    if (fg_tid && fg_tid != our_tid) {
+        AttachThreadInput(fg_tid, our_tid, TRUE);
+        attached = true;
+    }
+    SetForegroundWindow(target);
+    if (attached) {
+        AttachThreadInput(fg_tid, our_tid, FALSE);
+    }
+    BringWindowToTop(target);
+    // Promote to TOPMOST and back — bypasses FG lock for z-order, then drops
+    // back into normal position so it doesn't stay always-on-top.
+    SetWindowPos(target, HWND_TOPMOST,    0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(target, HWND_NOTOPMOST,  0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
 bool acquire_singleton_mutex(HANDLE& out) {
     out = CreateMutexW(nullptr, TRUE, autoterminal::kSingletonMutexName);
     if (!out) return false;
@@ -178,7 +208,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR cmdline, int) {
             case TrayCmdReload:         events.request_reload();   break;
             case TrayCmdExit:           events.request_exit();     break;
             case TrayCmdOpenConfig:     UIBridge::open_config_file(); break;
-            case TrayCmdSettings:       autoterminal::show_settings_window(g_settings_hwnd, true); break;
+            case TrayCmdSettings:
+                autoterminal::show_settings_window(g_settings_hwnd, true);
+                force_foreground(g_settings_hwnd);
+                break;
             case TrayCmdToggleAutostart: {
                 bool new_state = !g_config.autostart;
                 if (UIBridge::set_autostart(new_state)) {
@@ -225,7 +258,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR cmdline, int) {
     // First run → show settings as a setup wizard.
     // --silent → tray-only (used by the autostart entry at logon).
     if (!g_silent || first_run) {
+        // Position the dialog deterministically on the primary work area
+        // (CW_USEDEFAULT can land it on an off-screen monitor).
+        RECT primary{};
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &primary, 0);
+        SetWindowPos(g_settings_hwnd, nullptr,
+                      primary.left + 80, primary.top + 80,
+                      560, 380,
+                      SWP_NOZORDER | SWP_NOACTIVATE);
         autoterminal::show_settings_window(g_settings_hwnd, true);
+        force_foreground(g_settings_hwnd);
         AT_LOG_INFO("Settings window shown (manual launch or first-run)");
     }
 

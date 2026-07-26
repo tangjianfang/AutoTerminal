@@ -51,11 +51,14 @@ Right-click the tray icon for:
 - **Open config file...** — open `config.toml` in Notepad
 - **Settings...** — open the visual settings window (hotkey capture, monitor picker, padding, autostart, log level)
 - **Reload config** — re-read the config without relaunching
-- **About** / **Exit**
+- **About AutoTerminal**
+- **Exit AutoTerminal** — fully terminates the background process
 
 The Settings window lets you edit every field in `config.toml` without hand-editing TOML. Hotkey fields support click-to-capture: click *Capture*, press the desired chord (Esc cancels), then **Apply**.
 
 Default hotkeys: `Ctrl+Alt+T` (tile now), `Ctrl+Alt+Shift+T` (pause).
+
+> The tray popup uses a real (invisible, 0x0) helper window as the foreground target — a `HWND_MESSAGE` window can't take foreground, which is why some tray apps' right-click menus "don't work" on Win10/11.
 
 ## Configuration
 
@@ -116,10 +119,11 @@ build\tests\autoterminal_tests.exe
 
 ```bat
 powershell -ExecutionPolicy Bypass -File scripts\probe_windows.ps1
+powershell -ExecutionPolicy Bypass -File scripts\probe_settings_pos.ps1
 powershell -ExecutionPolicy Bypass -File scripts\simulate_rightclick.ps1
 ```
 
-`probe_windows.ps1` shows the message window, settings window, and child-control count. `simulate_rightclick.ps1` posts `WM_AT_TRAYICON`/`WM_RBUTTONUP` to the running message window — useful for confirming dispatch without clicking the tray.
+`probe_windows.ps1` shows the message window, settings window, and child-control count. `probe_settings_pos.ps1` reports the settings dialog's screen rect and current foreground window. `simulate_rightclick.ps1` posts `WM_AT_TRAYICON`/`WM_RBUTTONUP` to the running message window — useful for confirming dispatch without clicking the tray.
 
 ## License
 

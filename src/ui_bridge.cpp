@@ -17,14 +17,43 @@ constexpr UINT kHotkeyIdPause = 2;
 constexpr LPCWSTR kAutostartKey   = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr LPCWSTR kAutostartName = L"AutoTerminal";
 
-// Format command line for autostart: "<exe>" ...quoted properly...
-std::wstring quoted_exe_path() {
-    wchar_t path[MAX_PATH]{};
-    GetModuleFileNameW(nullptr, path, MAX_PATH);
-    std::wstring s = L"\"";
-    s += path;
-    s += L"\"";
-    return s;
+constexpr wchar_t kPopupHelperClass[] = L"AutoTerminal.PopupHelper.v1";
+
+// Window used purely as a foreground-capable owner for shell-tray popups.
+// A HWND_MESSAGE window cannot become foreground, so without this helper
+// TrackPopupMenu shows nothing on modern Windows.
+LRESULT CALLBACK popup_helper_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    return DefWindowProcW(h, m, w, l);
+}
+
+HWND create_popup_helper(HINSTANCE hinst) {
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize        = sizeof(wc);
+        wc.lpfnWndProc   = popup_helper_proc;
+        wc.hInstance     = hinst;
+        wc.lpszClassName = kPopupHelperClass;
+        wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
+        if (!RegisterClassExW(&wc)) {
+            DWORD err = GetLastError();
+            if (err != ERROR_CLASS_ALREADY_EXISTS) {
+                AT_LOG_ERROR("PopupHelper RegisterClassEx failed err=%lu", err);
+                return nullptr;
+            }
+        }
+        registered = true;
+    }
+    HWND h = CreateWindowExW(
+        WS_EX_TOOLWINDOW,                  // not in taskbar
+        kPopupHelperClass, L"",
+        WS_POPUP | WS_DISABLED,             // invisible, no interaction
+        0, 0, 0, 0,                          // 0x0 — never visible
+        nullptr, nullptr, hinst, nullptr);
+    if (!h) {
+        AT_LOG_ERROR("CreateWindowEx for PopupHelper failed err=%lu", GetLastError());
+    }
+    return h;
 }
 
 } // namespace
@@ -32,30 +61,46 @@ std::wstring quoted_exe_path() {
 void UIBridge::show_context_menu() {
     AT_LOG_INFO("Tray right-click: showing context menu");
     HMENU menu = CreatePopupMenu();
-    if (!menu) return;
-    AppendMenuW(menu, MF_STRING, TrayCmdTileNow,        L"Tile now");
-    AppendMenuW(menu, MF_STRING, TrayCmdTogglePause,    L"Pause auto-tile");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    if (!menu) {
+        AT_LOG_ERROR("CreatePopupMenu failed err=%lu", GetLastError());
+        return;
+    }
+    AppendMenuW(menu, MF_STRING,                          TrayCmdTileNow,        L"Tile now");
+    AppendMenuW(menu, MF_STRING,                          TrayCmdTogglePause,    L"Pause auto-tile");
+    AppendMenuW(menu, MF_SEPARATOR,                       0,                     nullptr);
     UINT auto_flags = MF_STRING | (current_config_.autostart ? MF_CHECKED : 0);
-    AppendMenuW(menu, auto_flags, TrayCmdToggleAutostart, L"Start with Windows");
-    AppendMenuW(menu, MF_STRING, TrayCmdOpenConfig,     L"Open config file...");
-    AppendMenuW(menu, MF_STRING, TrayCmdSettings,      L"Settings...");
-    AppendMenuW(menu, MF_STRING, TrayCmdReload,        L"Reload config");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, TrayCmdAbout,         L"About");
-    AppendMenuW(menu, MF_STRING, TrayCmdExit,          L"Exit");
+    AppendMenuW(menu, auto_flags,                         TrayCmdToggleAutostart,L"Start with Windows");
+    AppendMenuW(menu, MF_STRING,                          TrayCmdOpenConfig,     L"Open config file...");
+    AppendMenuW(menu, MF_STRING,                          TrayCmdSettings,       L"Settings...");
+    AppendMenuW(menu, MF_STRING,                          TrayCmdReload,         L"Reload config");
+    AppendMenuW(menu, MF_SEPARATOR,                       0,                     nullptr);
+    AppendMenuW(menu, MF_STRING,                          TrayCmdAbout,          L"About AutoTerminal");
+    AppendMenuW(menu, MF_STRING,                          TrayCmdExit,           L"Exit AutoTerminal");
 
     POINT pt{};
     GetCursorPos(&pt);
-    SetForegroundWindow(hwnd_);
+    // Use the popup helper (a real, foreground-capable 0x0 window) instead of
+    // the hidden HWND_MESSAGE window — the latter can't take foreground and
+    // TrackPopupMenu would silently fail without it.
+    HWND owner = helper_hwnd_ ? helper_hwnd_ : hwnd_;
+    if (!owner) {
+        AT_LOG_ERROR("No owner window for tray popup");
+        DestroyMenu(menu);
+        return;
+    }
+    SetForegroundWindow(owner);
     int cmd = TrackPopupMenu(menu,
                              TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-                             pt.x, pt.y, 0, hwnd_, nullptr);
+                             pt.x, pt.y, 0, owner, nullptr);
     // Required: post a benign message so the foreground state is released
     // and the next foreground window is allowed to activate.
-    PostMessageW(hwnd_, WM_NULL, 0, 0);
+    PostMessageW(owner, WM_NULL, 0, 0);
     DestroyMenu(menu);
-    if (cmd == 0) return;
+    if (cmd == 0) {
+        AT_LOG_DEBUG("TrackPopupMenu returned 0 (user dismissed)");
+        return;
+    }
+    AT_LOG_INFO("Tray menu picked command id=%d", cmd);
     dispatch(static_cast<TrayCommand>(cmd));
 }
 
@@ -68,6 +113,10 @@ UIBridge::~UIBridge() { shutdown(); }
 
 bool UIBridge::init(HWND hwnd) {
     hwnd_ = hwnd;
+    helper_hwnd_ = create_popup_helper(GetModuleHandleW(nullptr));
+    if (helper_hwnd_) {
+        AT_LOG_INFO("Popup helper hwnd=0x%p", helper_hwnd_);
+    }
 
     // Stable GUID so Windows persists this tray icon's visibility settings
     // across runs (without it, Win10/11 may shove a fresh-process icon into
@@ -115,6 +164,10 @@ void UIBridge::shutdown() {
         Shell_NotifyIconW(NIM_DELETE, &nid);
         added_ = false;
     }
+    if (helper_hwnd_) {
+        DestroyWindow(helper_hwnd_);
+        helper_hwnd_ = nullptr;
+    }
     hwnd_ = nullptr;
 }
 
@@ -156,6 +209,7 @@ void UIBridge::apply_config(const Config& cfg) {
 
 void UIBridge::on_tray_message(HWND /*hwnd*/, LPARAM lparam) {
     UINT msg = static_cast<UINT>(lparam);
+    AT_LOG_DEBUG("on_tray_message: lparam=0x%X", (unsigned)msg);
     switch (msg) {
         case WM_RBUTTONUP:
         case WM_CONTEXTMENU:

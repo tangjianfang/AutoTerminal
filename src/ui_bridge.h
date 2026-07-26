@@ -36,6 +36,9 @@ public:
     // EventSource window that will receive WM_AT_TRAYICON.
     bool init(HWND hwnd);
 
+    // Returns the foreground-capable helper window used for tray popups.
+    HWND popup_helper() const { return helper_hwnd_; }
+
     void shutdown();
 
     // Apply runtime settings: hotkeys (re-register), and the checked state
@@ -66,6 +69,7 @@ public:
 
 private:
     HWND hwnd_ = nullptr;
+    HWND helper_hwnd_ = nullptr;     // real top-level window used for tray popups
     bool added_ = false;
     int hotkey_id_tile_ = 1;
     int hotkey_id_pause_ = 2;
