@@ -4,6 +4,7 @@
 #include "event_source.h"
 #include "logger.h"
 #include "monitor_index.h"
+#include "settings_dialog.h"
 #include "tile_engine.h"
 #include "ui_bridge.h"
 #include "window_manager.h"
@@ -17,6 +18,8 @@ namespace {
 std::mutex g_state_mutex;
 autoterminal::Config g_config;
 autoterminal::EventSource* g_events = nullptr;
+autoterminal::UIBridge* g_ui = nullptr;
+HWND g_settings_hwnd = nullptr;
 
 bool perform_tile() {
     std::lock_guard<std::mutex> lock(g_state_mutex);
@@ -149,31 +152,54 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             case TrayCmdReload:         events.request_reload();   break;
             case TrayCmdExit:           events.request_exit();     break;
             case TrayCmdOpenConfig:     UIBridge::open_config_file(); break;
+            case TrayCmdSettings:       autoterminal::show_settings_window(g_settings_hwnd, true); break;
             case TrayCmdToggleAutostart: {
                 bool new_state = !g_config.autostart;
                 if (UIBridge::set_autostart(new_state)) {
                     std::lock_guard<std::mutex> lock(g_state_mutex);
                     g_config.autostart = new_state;
                     save_config(config_path(), g_config);
+                    AT_LOG_INFO("Autostart = %s", new_state ? "ON" : "OFF");
+                } else {
+                    AT_LOG_WARN("Failed to toggle autostart");
                 }
                 break;
             }
             case TrayCmdAbout:
                 MessageBoxW(nullptr,
                     L"AutoTerminal\n"
-                    L"Tiling terminal windows onto a chosen display.\n"
-                    L"https://github.com/yourname/AutoTerminal",
+                    L"Tiling terminal windows onto a chosen display.\n\n"
+                    L"Tip: right-click the tray icon for Settings.",
                     L"About AutoTerminal", MB_ICONINFORMATION | MB_OK);
                 break;
         }
     });
+    g_ui = &ui;
     if (!ui.init(events.hwnd())) {
         AT_LOG_WARN("Failed to install tray icon — continuing without UI");
     }
     ui.apply_config(g_config);
 
+    g_settings_hwnd = autoterminal::create_settings_window(
+        events.hinstance(), g_config,
+        autoterminal::SettingsCallbacks{
+            .on_apply = [&](const autoterminal::Config& new_cfg) {
+                std::lock_guard<std::mutex> lock(g_state_mutex);
+                g_config = new_cfg;
+                save_config(config_path(), g_config);
+                if (g_ui) g_ui->apply_config(g_config);
+                // Sync autostart registry with the checkbox state (idempotent).
+                autoterminal::UIBridge::set_autostart(g_config.autostart);
+                set_log_level(g_config.log_level);
+                AT_LOG_INFO("Settings applied via dialog");
+            }
+        });
+
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (g_settings_hwnd && IsDialogMessageW(g_settings_hwnd, &msg)) {
+            continue;
+        }
         if (msg.message == WM_AT_TRAYICON) {
             ui.on_tray_message(msg.hwnd, msg.lParam);
             continue;

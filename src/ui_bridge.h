@@ -15,6 +15,7 @@ enum TrayCommand {
     TrayCmdTogglePause,
     TrayCmdToggleAutostart,
     TrayCmdOpenConfig,
+    TrayCmdSettings,
     TrayCmdReload,
     TrayCmdAbout,
     TrayCmdExit,
@@ -56,7 +57,14 @@ public:
 private:
     void register_hotkeys();
     void unregister_hotkeys();
+    void show_context_menu();
+    void dispatch(TrayCommand c);
 
+public:
+    // Read-only access for the settings dialog so it can draw "Current autostart = on".
+    const Config& current_config() const { return current_config_; }
+
+private:
     HWND hwnd_ = nullptr;
     bool added_ = false;
     int hotkey_id_tile_ = 1;

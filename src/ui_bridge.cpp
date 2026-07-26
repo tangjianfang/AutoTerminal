@@ -27,32 +27,40 @@ std::wstring quoted_exe_path() {
     return s;
 }
 
-void show_context_menu(HWND hwnd) {
+} // namespace
+
+void UIBridge::show_context_menu() {
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
     AppendMenuW(menu, MF_STRING, TrayCmdTileNow,        L"Tile now");
     AppendMenuW(menu, MF_STRING, TrayCmdTogglePause,    L"Pause auto-tile");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING | MF_CHECKED * 0, TrayCmdToggleAutostart,
-                L"Start with Windows");
+    UINT auto_flags = MF_STRING | (current_config_.autostart ? MF_CHECKED : 0);
+    AppendMenuW(menu, auto_flags, TrayCmdToggleAutostart, L"Start with Windows");
     AppendMenuW(menu, MF_STRING, TrayCmdOpenConfig,     L"Open config file...");
-    AppendMenuW(menu, MF_STRING, TrayCmdReload,         L"Reload config");
+    AppendMenuW(menu, MF_STRING, TrayCmdSettings,      L"Settings...");
+    AppendMenuW(menu, MF_STRING, TrayCmdReload,        L"Reload config");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, TrayCmdAbout,          L"About");
-    AppendMenuW(menu, MF_STRING, TrayCmdExit,           L"Exit");
+    AppendMenuW(menu, MF_STRING, TrayCmdAbout,         L"About");
+    AppendMenuW(menu, MF_STRING, TrayCmdExit,          L"Exit");
 
     POINT pt{};
     GetCursorPos(&pt);
-    SetForegroundWindow(hwnd);
+    SetForegroundWindow(hwnd_);
     int cmd = TrackPopupMenu(menu,
                              TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-                             pt.x, pt.y, 0, hwnd, nullptr);
+                             pt.x, pt.y, 0, hwnd_, nullptr);
+    // Required: post a benign message so the foreground state is released
+    // and the next foreground window is allowed to activate.
+    PostMessageW(hwnd_, WM_NULL, 0, 0);
     DestroyMenu(menu);
     if (cmd == 0) return;
-    SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(cmd, 0), 0);
+    dispatch(static_cast<TrayCommand>(cmd));
 }
 
-} // namespace
+void UIBridge::dispatch(TrayCommand c) {
+    if (cmd_cb_) cmd_cb_(c);
+}
 
 UIBridge::UIBridge() = default;
 UIBridge::~UIBridge() { shutdown(); }
@@ -64,16 +72,20 @@ bool UIBridge::init(HWND hwnd) {
     nid.cbSize           = sizeof(nid);
     nid.hWnd             = hwnd;
     nid.uID              = 1;
-    nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
     nid.uCallbackMessage = WM_AT_TRAYICON;
     nid.hIcon            = LoadIconW(nullptr, IDI_APPLICATION);
     if (!nid.hIcon) nid.hIcon = LoadIconW(nullptr, IDI_WINLOGO);
-    wcscpy_s(nid.szTip, L"AutoTerminal");
+    wcscpy_s(nid.szTip, L"AutoTerminal - right-click for menu");
     added_ = Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
     if (!added_) {
-        AT_LOG_ERROR("Shell_NotifyIcon NIM_ADD failed");
+        AT_LOG_ERROR("Shell_NotifyIcon NIM_ADD failed err=%lu", GetLastError());
         return false;
     }
+    // Modernize behaviour: enable NOTIFYICON_VERSION_4 so callbacks fire reliably.
+    nid.uVersion = NOTIFYICON_VERSION_4;
+    Shell_NotifyIconW(NIM_SETVERSION, &nid);
+    AT_LOG_INFO("Tray icon installed (hwnd=0x%p)", hwnd);
     return true;
 }
 
@@ -100,7 +112,8 @@ void UIBridge::register_hotkeys() {
         for (size_t i = 0; i < wide.size(); ++i) label[i] = static_cast<char>(wide[i] & 0x7F);
         AT_LOG_INFO("Registered hotkey tile: %s", label.c_str());
     } else {
-        AT_LOG_WARN("Failed to register hotkey tile");
+        AT_LOG_WARN("Failed to register hotkey tile (mods=0x%X vk=0x%X) - is it already in use?",
+                    current_config_.hotkey_tile.modifiers, current_config_.hotkey_tile.vk);
     }
     if (RegisterHotKey(hwnd_, kHotkeyIdPause, current_config_.hotkey_toggle_pause.modifiers,
                        current_config_.hotkey_toggle_pause.vk)) {
@@ -109,7 +122,8 @@ void UIBridge::register_hotkeys() {
         for (size_t i = 0; i < wide.size(); ++i) label[i] = static_cast<char>(wide[i] & 0x7F);
         AT_LOG_INFO("Registered hotkey pause: %s", label.c_str());
     } else {
-        AT_LOG_WARN("Failed to register hotkey pause");
+        AT_LOG_WARN("Failed to register hotkey pause (mods=0x%X vk=0x%X) - is it already in use?",
+                    current_config_.hotkey_toggle_pause.modifiers, current_config_.hotkey_toggle_pause.vk);
     }
 }
 
@@ -124,15 +138,15 @@ void UIBridge::apply_config(const Config& cfg) {
     register_hotkeys();
 }
 
-void UIBridge::on_tray_message(HWND hwnd, LPARAM lparam) {
+void UIBridge::on_tray_message(HWND /*hwnd*/, LPARAM lparam) {
     UINT msg = static_cast<UINT>(lparam);
     switch (msg) {
         case WM_RBUTTONUP:
         case WM_CONTEXTMENU:
-            show_context_menu(hwnd);
+            show_context_menu();
             break;
         case WM_LBUTTONDBLCLK:
-            if (cmd_cb_) cmd_cb_(TrayCmdTileNow);
+            dispatch(TrayCmdTileNow);
             break;
     }
 }

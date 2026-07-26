@@ -29,14 +29,17 @@ That produces `build\AutoTerminal.exe`.
 build\AutoTerminal.exe
 ```
 
-The first launch writes a default `config.toml` and starts in the background. The tray icon (Windows default app icon for now) gives you:
+The first launch writes a default `config.toml` and starts in the background. Right-click the tray icon for:
 
 - **Tile now** — run one re-tile pass immediately
 - **Pause auto-tile** — stop responding to events (manual triggers still work)
 - **Start with Windows** — toggle the `HKCU\...\Run` autostart entry
 - **Open config file...** — open `config.toml` in Notepad
+- **Settings...** — open the visual settings window (hotkey capture, monitor picker, padding, autostart, log level)
 - **Reload config** — re-read the config without relaunching
 - **About** / **Exit**
+
+The Settings window lets you edit every field in `config.toml` without hand-editing TOML. Hotkey fields support click-to-capture: click *Capture*, press the desired chord (Esc cancels), then **Apply**.
 
 Default hotkeys: `Ctrl+Alt+T` (tile now), `Ctrl+Alt+Shift+T` (pause).
 
