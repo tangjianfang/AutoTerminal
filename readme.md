@@ -25,11 +25,25 @@ That produces `build\AutoTerminal.exe`.
 
 ## Run
 
+### Manual (double-click from Explorer)
+
 ```bat
 build\AutoTerminal.exe
 ```
 
-The first launch writes a default `config.toml` and starts in the background. Right-click the tray icon for:
+The first launch writes a default `config.toml` and immediately shows the **Settings window** so you see something happen. Edit anything you need (the default hotkeys and target monitor are sensible), click **Apply**, and the window hides — the daemon keeps running with the tray icon for hotkey access.
+
+### Silent (used by autostart at logon)
+
+```bat
+build\AutoTerminal.exe --silent
+```
+
+Same daemon, but the Settings window stays hidden. The autostart registry entry uses this form so logon doesn't pop a window in front of the user.
+
+### Tray icon
+
+Right-click the tray icon for:
 
 - **Tile now** — run one re-tile pass immediately
 - **Pause auto-tile** — stop responding to events (manual triggers still work)
@@ -97,6 +111,15 @@ build\tests\autoterminal_tests.exe
 ## Logs
 
 `%APPDATA%\AutoTerminal\autoterminal.log` (also mirrored to DebugView via `OutputDebugString`).
+
+## Diagnostic scripts
+
+```bat
+powershell -ExecutionPolicy Bypass -File scripts\probe_windows.ps1
+powershell -ExecutionPolicy Bypass -File scripts\simulate_rightclick.ps1
+```
+
+`probe_windows.ps1` shows the message window, settings window, and child-control count. `simulate_rightclick.ps1` posts `WM_AT_TRAYICON`/`WM_RBUTTONUP` to the running message window — useful for confirming dispatch without clicking the tray.
 
 ## License
 

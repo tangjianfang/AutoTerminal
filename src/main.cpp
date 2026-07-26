@@ -11,6 +11,7 @@
 
 #include <windows.h>
 
+#include <filesystem>
 #include <mutex>
 
 namespace {
@@ -20,6 +21,24 @@ autoterminal::Config g_config;
 autoterminal::EventSource* g_events = nullptr;
 autoterminal::UIBridge* g_ui = nullptr;
 HWND g_settings_hwnd = nullptr;
+bool g_silent = false;
+
+// Returns true if `needle` appears as a whole flag in `cmdline`
+// (e.g. "--silent" or "/silent").
+bool has_flag(LPCWSTR cmdline, LPCWSTR flag) {
+    if (!cmdline) return false;
+    size_t flen = wcslen(flag);
+    LPCWSTR p = cmdline;
+    while (*p) {
+        while (*p == L' ' || *p == L'\t') ++p;
+        if (_wcsnicmp(p, flag, flen) == 0) {
+            wchar_t after = p[flen];
+            if (after == L'\0' || after == L' ' || after == L'\t') return true;
+        }
+        while (*p && *p != L' ') ++p;
+    }
+    return false;
+}
 
 bool perform_tile() {
     std::lock_guard<std::mutex> lock(g_state_mutex);
@@ -95,13 +114,19 @@ bool ping_existing_instance() {
 
 } // namespace
 
-int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR cmdline, int) {
     using namespace autoterminal;
+
+    // --silent: stay in the tray, don't pop the settings window.
+    //   Used by the autostart entry so logon doesn't open a window.
+    // /settings: same as default for manual double-click — show settings.
+    g_silent = has_flag(cmdline, L"--silent") || has_flag(cmdline, L"/silent");
 
     auto log_path = config_dir() / L"autoterminal.log";
     init_logger(log_path.wstring(), LogLevel::Info);
 
-    AT_LOG_INFO("==== AutoTerminal starting ====");
+    AT_LOG_INFO("==== AutoTerminal starting (silent=%s) ====",
+                g_silent ? "true" : "false");
 
     HANDLE mutex = nullptr;
     if (!acquire_singleton_mutex(mutex)) {
@@ -111,6 +136,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     }
 
     auto cfg_path = config_path();
+    bool first_run = !std::filesystem::exists(cfg_path);
     auto loaded = load_config(cfg_path);
     if (!loaded) {
         MessageBoxW(nullptr, L"AutoTerminal: failed to parse config.toml.\n"
@@ -194,6 +220,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
                 AT_LOG_INFO("Settings applied via dialog");
             }
         });
+
+    // Manual double-click → user wants to see UI immediately.
+    // First run → show settings as a setup wizard.
+    // --silent → tray-only (used by the autostart entry at logon).
+    if (!g_silent || first_run) {
+        autoterminal::show_settings_window(g_settings_hwnd, true);
+        AT_LOG_INFO("Settings window shown (manual launch or first-run)");
+    }
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

@@ -30,6 +30,7 @@ std::wstring quoted_exe_path() {
 } // namespace
 
 void UIBridge::show_context_menu() {
+    AT_LOG_INFO("Tray right-click: showing context menu");
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
     AppendMenuW(menu, MF_STRING, TrayCmdTileNow,        L"Tile now");
@@ -68,21 +69,36 @@ UIBridge::~UIBridge() { shutdown(); }
 bool UIBridge::init(HWND hwnd) {
     hwnd_ = hwnd;
 
+    // Stable GUID so Windows persists this tray icon's visibility settings
+    // across runs (without it, Win10/11 may shove a fresh-process icon into
+    // the overflow ^(arrow) tray area, making it easy to miss).
+    static const GUID kTrayIconGuid = {
+        0x4f9db5e0, 0x3a21, 0x4e47,
+        { 0xb5, 0xc9, 0xa8, 0xe2, 0xb1, 0xc0, 0xd1, 0x11 }
+    };
+
     NOTIFYICONDATAW nid{};
     nid.cbSize           = sizeof(nid);
     nid.hWnd             = hwnd;
     nid.uID              = 1;
-    nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
+    nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP
+                         | NIF_GUID | NIF_STATE;
     nid.uCallbackMessage = WM_AT_TRAYICON;
-    nid.hIcon            = LoadIconW(nullptr, IDI_APPLICATION);
-    if (!nid.hIcon) nid.hIcon = LoadIconW(nullptr, IDI_WINLOGO);
-    wcscpy_s(nid.szTip, L"AutoTerminal - right-click for menu");
+    nid.guidItem         = kTrayIconGuid;
+    // Force the icon into the visible state, overriding any prior "hidden"
+    // preference the user set.
+    nid.dwState          = 0;
+    nid.dwStateMask      = NIS_HIDDEN;
+    nid.hIcon            = LoadIconW(nullptr, IDI_INFORMATION);
+    if (!nid.hIcon) nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wcscpy_s(nid.szTip, L"AutoTerminal — right-click for menu");
     added_ = Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
     if (!added_) {
         AT_LOG_ERROR("Shell_NotifyIcon NIM_ADD failed err=%lu", GetLastError());
         return false;
     }
-    // Modernize behaviour: enable NOTIFYICON_VERSION_4 so callbacks fire reliably.
+    // Enable NOTIFYICON_VERSION_4 so right-click / context-menu callbacks
+    // fire reliably on modern Windows.
     nid.uVersion = NOTIFYICON_VERSION_4;
     Shell_NotifyIconW(NIM_SETVERSION, &nid);
     AT_LOG_INFO("Tray icon installed (hwnd=0x%p)", hwnd);
@@ -177,7 +193,13 @@ bool UIBridge::set_autostart(bool enable) {
         return false;
     }
     if (enable) {
-        std::wstring cmd = quoted_exe_path();
+        // --silent makes the binary stay in the tray at logon instead of
+        // popping the settings window in front of the user.
+        wchar_t path[MAX_PATH]{};
+        GetModuleFileNameW(nullptr, path, MAX_PATH);
+        std::wstring cmd = L"\"";
+        cmd += path;
+        cmd += L"\" --silent";
         rc = RegSetValueExW(key, kAutostartName, 0, REG_SZ,
                             reinterpret_cast<const BYTE*>(cmd.c_str()),
                             static_cast<DWORD>((cmd.size() + 1) * sizeof(wchar_t)));
