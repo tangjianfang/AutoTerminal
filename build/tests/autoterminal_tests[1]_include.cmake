@@ -1,0 +1,5 @@
+if(EXISTS "C:/tjf/github/AutoTerminal/build/tests/autoterminal_tests[1]_tests.cmake")
+  include("C:/tjf/github/AutoTerminal/build/tests/autoterminal_tests[1]_tests.cmake")
+else()
+  add_test(autoterminal_tests_NOT_BUILT autoterminal_tests_NOT_BUILT)
+endif()

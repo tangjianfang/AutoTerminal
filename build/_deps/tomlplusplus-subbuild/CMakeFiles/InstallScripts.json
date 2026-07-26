@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/tjf/github/AutoTerminal/build/_deps/tomlplusplus-subbuild/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

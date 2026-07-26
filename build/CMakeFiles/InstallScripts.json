@@ -1,0 +1,12 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/tjf/github/AutoTerminal/build/cmake_install.cmake",
+		"C:/tjf/github/AutoTerminal/build/_deps/tomlplusplus-build/cmake_install.cmake",
+		"C:/tjf/github/AutoTerminal/build/_deps/googletest-build/cmake_install.cmake",
+		"C:/tjf/github/AutoTerminal/build/_deps/googletest-build/googlemock/cmake_install.cmake",
+		"C:/tjf/github/AutoTerminal/build/_deps/googletest-build/googletest/cmake_install.cmake",
+		"C:/tjf/github/AutoTerminal/build/tests/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
