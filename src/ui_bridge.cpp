@@ -20,15 +20,41 @@ constexpr LPCWSTR kAutostartName = L"AutoTerminal";
 
 constexpr wchar_t kPopupHelperClass[] = L"AutoTerminal.PopupHelper.v1";
 
-// Window used purely as a foreground-capable owner for shell-tray popups.
-// A HWND_MESSAGE window cannot become foreground, so without this helper
-// TrackPopupMenu shows nothing on modern Windows.
+// Window used as BOTH:
+//   1. a foreground-capable owner for shell-tray popups, AND
+//   2. the callback target for Shell_NotifyIcon (replaces the previous
+//      HWND_MESSAGE window that the Windows 11 shell silently ignores).
 //
-// We make the helper a *real*, top-level, visible (but off-screen and 1x1)
-// window so it can pass Win10/11's foreground-ownership check. A previous
-// version used a 0x0 invisible window, which TrackPopupMenu silently
-// rejected (the function returned 0 with no menu ever appearing).
+// Two reasons we cannot use a HWND_MESSAGE window here:
+//
+//   * TrackPopupMenu: a message-only window cannot become foreground, so
+//     TrackPopupMenu silently fails (returns 0, no menu ever appears).
+//
+//   * Shell_NotifyIcon click routing: the Windows 11 shell delivers the
+//     tray-icon click callback to a *real*, top-level window associated
+//     with the registered icon. HWND_MESSAGE windows have no UI surface,
+//     and the shell drops the click entirely — no callback is sent. We
+//     observed this as "right-click does nothing, double-click does
+//     nothing" in the live daemon.
+//
+// So we make this helper a *real*, top-level, visible (but off-screen and
+// 1x1) window. The user never sees it, but Win32 treats it as a valid
+// foreground candidate AND as a valid shell-notification callback target.
+//
+// WM_AT_TRAYICON (the tray-icon callback message) is delivered to this
+// window and forwarded to UIBridge::on_tray_message() via the
+// SetWindowLongPtrW GWLP_USERDATA pointer set at create time.
 LRESULT CALLBACK popup_helper_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (m == WM_NCCREATE) {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(l);
+        if (cs) SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+        return DefWindowProcW(h, m, w, l);
+    }
+    if (m == WM_AT_TRAYICON) {
+        auto* self = reinterpret_cast<UIBridge*>(GetWindowLongPtrW(h, GWLP_USERDATA));
+        if (self) self->on_tray_message(h, l);
+        return 0;
+    }
     return DefWindowProcW(h, m, w, l);
 }
 
@@ -37,7 +63,7 @@ constexpr int kPopupHelperSize = 1;                  // 1x1 px so the window is
 constexpr int kPopupHelperOffX = -32000;             // off-screen
 constexpr int kPopupHelperOffY = -32000;
 
-HWND create_popup_helper(HINSTANCE hinst) {
+HWND create_popup_helper(HINSTANCE hinst, UIBridge* owner) {
     static bool registered = false;
     if (!registered) {
         WNDCLASSEXW wc{};
@@ -58,13 +84,13 @@ HWND create_popup_helper(HINSTANCE hinst) {
     // Real top-level window with WS_POPUP | WS_VISIBLE (no WS_DISABLED — that
     // blocks SetForegroundWindow on modern Windows). Positioned far off-screen
     // and 1x1 so the user never sees it but Win32 considers it a valid
-    // foreground candidate.
+    // foreground candidate AND a valid shell-notification callback target.
     HWND h = CreateWindowExW(
         WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         kPopupHelperClass, L"",
         WS_POPUP | WS_VISIBLE,
         kPopupHelperOffX, kPopupHelperOffY, kPopupHelperSize, kPopupHelperSize,
-        nullptr, nullptr, hinst, nullptr);
+        nullptr, nullptr, hinst, owner);
     if (!h) {
         AT_LOG_ERROR("CreateWindowEx for PopupHelper failed err=%lu", GetLastError());
     }
@@ -149,9 +175,11 @@ UIBridge::~UIBridge() { shutdown(); }
 
 bool UIBridge::init(HWND hwnd) {
     hwnd_ = hwnd;
-    helper_hwnd_ = create_popup_helper(GetModuleHandleW(nullptr));
+    helper_hwnd_ = create_popup_helper(GetModuleHandleW(nullptr), this);
     if (helper_hwnd_) {
-        AT_LOG_INFO("Popup helper hwnd=0x%p", helper_hwnd_);
+        AT_LOG_INFO("Popup helper hwnd=0x%p (also tray callback target)", helper_hwnd_);
+    } else {
+        AT_LOG_WARN("Popup helper creation failed — tray clicks will not be delivered");
     }
 
     // Stable GUID so Windows persists this tray icon's visibility settings
@@ -162,9 +190,15 @@ bool UIBridge::init(HWND hwnd) {
         { 0xb5, 0xc9, 0xa8, 0xe2, 0xb1, 0xc0, 0xd1, 0x11 }
     };
 
+    // Register the tray icon with the POPUP HELPER (a real, top-level window)
+    // as the callback target — NOT with `hwnd`, which is the EventSource's
+    // HWND_MESSAGE window. The Windows 11 shell does not deliver tray-icon
+    // clicks to message-only windows (no UI surface), so we route callbacks
+    // through the popup helper, whose wnd_proc forwards them to
+    // UIBridge::on_tray_message via its GWLP_USERDATA pointer.
     NOTIFYICONDATAW nid{};
     nid.cbSize           = sizeof(nid);
-    nid.hWnd             = hwnd;
+    nid.hWnd             = helper_hwnd_ ? helper_hwnd_ : hwnd;
     nid.uID              = 1;
     nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP
                          | NIF_GUID | NIF_STATE;
@@ -186,16 +220,16 @@ bool UIBridge::init(HWND hwnd) {
     // fire reliably on modern Windows.
     nid.uVersion = NOTIFYICON_VERSION_4;
     Shell_NotifyIconW(NIM_SETVERSION, &nid);
-    AT_LOG_INFO("Tray icon installed (hwnd=0x%p)", hwnd);
+    AT_LOG_INFO("Tray icon installed (callback hwnd=0x%p)", static_cast<void*>(nid.hWnd));
     return true;
 }
 
 void UIBridge::shutdown() {
     unregister_hotkeys();
-    if (added_ && hwnd_) {
+    if (added_ && helper_hwnd_) {
         NOTIFYICONDATAW nid{};
         nid.cbSize = sizeof(nid);
-        nid.hWnd   = hwnd_;
+        nid.hWnd   = helper_hwnd_;
         nid.uID    = 1;
         Shell_NotifyIconW(NIM_DELETE, &nid);
         added_ = false;

@@ -280,10 +280,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR cmdline, int) {
         if (g_settings_hwnd && IsDialogMessageW(g_settings_hwnd, &msg)) {
             continue;
         }
-        if (msg.message == WM_AT_TRAYICON) {
-            ui.on_tray_message(msg.hwnd, msg.lParam);
-            continue;
-        }
+        // Note: WM_AT_TRAYICON is delivered to the popup helper's HWND (see
+        // UIBridge::init). Its wnd_proc (popup_helper_proc) handles the message
+        // directly via DispatchMessageW, forwarding to UIBridge::on_tray_message
+        // via GWLP_USERDATA. No special-case dispatch is needed here.
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
