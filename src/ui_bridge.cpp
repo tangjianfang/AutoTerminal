@@ -22,9 +22,19 @@ constexpr wchar_t kPopupHelperClass[] = L"AutoTerminal.PopupHelper.v1";
 // Window used purely as a foreground-capable owner for shell-tray popups.
 // A HWND_MESSAGE window cannot become foreground, so without this helper
 // TrackPopupMenu shows nothing on modern Windows.
+//
+// We make the helper a *real*, top-level, visible (but off-screen and 1x1)
+// window so it can pass Win10/11's foreground-ownership check. A previous
+// version used a 0x0 invisible window, which TrackPopupMenu silently
+// rejected (the function returned 0 with no menu ever appearing).
 LRESULT CALLBACK popup_helper_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcW(h, m, w, l);
 }
+
+constexpr int kPopupHelperSize = 1;                  // 1x1 px so the window is
+                                                     // "real" but invisible
+constexpr int kPopupHelperOffX = -32000;             // off-screen
+constexpr int kPopupHelperOffY = -32000;
 
 HWND create_popup_helper(HINSTANCE hinst) {
     static bool registered = false;
@@ -44,11 +54,15 @@ HWND create_popup_helper(HINSTANCE hinst) {
         }
         registered = true;
     }
+    // Real top-level window with WS_POPUP | WS_VISIBLE (no WS_DISABLED — that
+    // blocks SetForegroundWindow on modern Windows). Positioned far off-screen
+    // and 1x1 so the user never sees it but Win32 considers it a valid
+    // foreground candidate.
     HWND h = CreateWindowExW(
-        WS_EX_TOOLWINDOW,                  // not in taskbar
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         kPopupHelperClass, L"",
-        WS_POPUP | WS_DISABLED,             // invisible, no interaction
-        0, 0, 0, 0,                          // 0x0 — never visible
+        WS_POPUP | WS_VISIBLE,
+        kPopupHelperOffX, kPopupHelperOffY, kPopupHelperSize, kPopupHelperSize,
         nullptr, nullptr, hinst, nullptr);
     if (!h) {
         AT_LOG_ERROR("CreateWindowEx for PopupHelper failed err=%lu", GetLastError());
@@ -79,28 +93,49 @@ void UIBridge::show_context_menu() {
 
     POINT pt{};
     GetCursorPos(&pt);
-    // Use the popup helper (a real, foreground-capable 0x0 window) instead of
-    // the hidden HWND_MESSAGE window — the latter can't take foreground and
-    // TrackPopupMenu would silently fail without it.
+
+    // The popup helper is a real, visible (but 1x1 and off-screen) top-level
+    // window. A 0x0 invisible window cannot take foreground on Win10/11, so
+    // TrackPopupMenu returns 0 with no menu ever displayed — this is the bug
+    // we're working around.
     HWND owner = helper_hwnd_ ? helper_hwnd_ : hwnd_;
     if (!owner) {
         AT_LOG_ERROR("No owner window for tray popup");
         DestroyMenu(menu);
         return;
     }
+
+    // Bring the helper back to a known state and make sure it's foreground.
+    SetWindowPos(owner, nullptr,
+                 kPopupHelperOffX, kPopupHelperOffY,
+                 kPopupHelperSize, kPopupHelperSize,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    ShowWindow(owner, SW_SHOWNOACTIVATE);
+
+    // Attach to the current FG thread so SetForegroundWindow can bypass the
+    // foreground-lock on Win10/11.
+    HWND fg = GetForegroundWindow();
+    DWORD fg_tid = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
+    DWORD our_tid = GetCurrentThreadId();
+    bool attached = false;
+    if (fg_tid && fg_tid != our_tid) {
+        AttachThreadInput(fg_tid, our_tid, TRUE);
+        attached = true;
+    }
     SetForegroundWindow(owner);
+    if (attached) {
+        AttachThreadInput(fg_tid, our_tid, FALSE);
+    }
+
     int cmd = TrackPopupMenu(menu,
                              TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
                              pt.x, pt.y, 0, owner, nullptr);
-    // Required: post a benign message so the foreground state is released
-    // and the next foreground window is allowed to activate.
+    ShowWindow(owner, SW_HIDE);
     PostMessageW(owner, WM_NULL, 0, 0);
     DestroyMenu(menu);
-    if (cmd == 0) {
-        AT_LOG_DEBUG("TrackPopupMenu returned 0 (user dismissed)");
-        return;
-    }
-    AT_LOG_INFO("Tray menu picked command id=%d", cmd);
+
+    AT_LOG_INFO("Tray menu picked id=%d", cmd);
+    if (cmd == 0) return;
     dispatch(static_cast<TrayCommand>(cmd));
 }
 
