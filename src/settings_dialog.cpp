@@ -112,6 +112,13 @@ public:
         : inst_(inst), cfg_(std::move(initial)), cbs_(std::move(cbs)),
           palette_(nfui::theme_palette(nfui::resolve_theme_mode(nfui::ThemeMode::system))) {}
 
+    ~SettingsWindow() override {
+        // Owned GDI handle. The caller currently leaks the SettingsWindow
+        // object (matches AboutWindow), but DeleteObject is idempotent and
+        // protects us if a future caller does decide to `delete` the window.
+        if (bg_brush_) DeleteObject(bg_brush_);
+    }
+
     bool create_main(int show_cmd) {
         if (!create({inst_, kClass, kTitle,
                      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
@@ -207,15 +214,38 @@ protected:
         switch (m) {
             case WM_KEYDOWN:   return on_keydown(w);
             case WM_CLOSE:     on_close();                  return 0;
-            case WM_ERASEBKGND:
-                // NFUI controls paint themselves; suppress erase to avoid
-                // the brief background flicker before the first paint.
+            case WM_ERASEBKGND: {
+                // NFUI Window registers with the system COLOR_WINDOW brush as
+                // its background, which in light mode is a cold beige-grey
+                // (#D4D0C8) that doesn't match NFUI's palette_.background
+                // (#FAF9F5). Painting our own background brush here keeps the
+                // dialog surface visually unified with the StaticText and
+                // ComboBox panes that sit on top of it.
+                HDC dc = reinterpret_cast<HDC>(w);
+                RECT rc{};
+                GetClientRect(hwnd(), &rc);
+                FillRect(dc, &rc, background_brush());
                 return 1;
+            }
             case WM_CTLCOLORSTATIC: {
+                // NFUI StaticText uses SS_OWNERDRAW (see StaticText.cpp), so
+                // WM_CTLCOLORSTATIC actually fires for native Edit/ComboBox
+                // labels. Match the surface colour so any native label blends
+                // with the panel, and use text_secondary (a soft warm grey
+                // #6B6862) rather than near-black #1F1E1D — the near-black is
+                // what made labels look harsh against the cream background.
                 HDC dc = reinterpret_cast<HDC>(w);
                 SetBkMode(dc, TRANSPARENT);
+                SetTextColor(dc, palette_.text_secondary.rgb);
+                return reinterpret_cast<LRESULT>(background_brush());
+            }
+            case WM_CTLCOLOREDIT: {
+                // Native Edit field — text + back-colour to match the panel.
+                HDC dc = reinterpret_cast<HDC>(w);
+                SetBkMode(dc, OPAQUE);
+                SetBkColor(dc, palette_.background.rgb);
                 SetTextColor(dc, palette_.text.rgb);
-                return reinterpret_cast<LRESULT>(CreateSolidBrush(palette_.background.rgb));
+                return reinterpret_cast<LRESULT>(background_brush());
             }
             case WM_DPICHANGED: {
                 dpi_ = LOWORD(w);   // per-monitor DPI of the new monitor
@@ -243,16 +273,34 @@ protected:
     }
 
 private:
+    // -------- utilities ------------------------------------------------
+
+    // Lazy-create + cache the background brush. Cache invalidation on
+    // theme change isn't needed today (the dialog re-creates its window
+    // on theme switch), but the lazy create keeps the first paint path
+    // cheap and avoids leaking brushes on destruction.
+    HBRUSH background_brush() noexcept {
+        if (bg_brush_ == nullptr) {
+            bg_brush_ = CreateSolidBrush(palette_.background.rgb);
+        }
+        return bg_brush_;
+    }
+
     // -------- control-builders (NFUI) ---------------------------------
 
     void add_label(int x, int y, int w, int h, std::wstring_view text, int id) {
         nfui::ControlCreateParams p{inst_, hwnd(), id, text, x, y, w, h};
         labels_.push_back(std::make_unique<nfui::StaticText>());
         (void)labels_.back()->inject_theme(&palette_, &fonts_);
-        // Subtle body labels: sm size, left-aligned.
+        // Form labels: base size + semibold, sitting one notch under the
+        // SettingsDemo's lg panel titles. Use text_secondary (warm grey) so
+        // they don't fight the near-black body text for attention — this is
+        // the single biggest contributor to the "harsh / fake-black" feel.
         nfui::TextStyle ts{};
-        ts.font_size_pt = nfui::font_pt::sm;
-        ts.align_v = nfui::StaticTextAlignV::middle;
+        ts.font_size_pt  = nfui::font_pt::base;
+        ts.use_semibold  = true;
+        ts.foreground    = palette_.text_secondary;
+        ts.align_v       = nfui::StaticTextAlignV::middle;
         (void)labels_.back()->set_style(ts);
         (void)labels_.back()->create(p);
     }
@@ -263,11 +311,17 @@ private:
                                     WS_CHILD | WS_VISIBLE | WS_TABSTOP |
                                     (readonly ? ES_READONLY : ES_AUTOHSCROLL)};
         if (id == IDC_PADDING_EDIT) p.style |= ES_NUMBER;
-        p.ex_style = WS_EX_CLIENTEDGE;
+        // WS_BORDER draws a 1-px flat frame; WS_EX_CLIENTEDGE would draw a
+        // 2-px carved-in look that fights the cream surface tone. The flat
+        // border plus the surrounding panel background reads more like a
+        // SettingsDemo "card" surface.
+        p.style    |= WS_BORDER;
+        p.ex_style  = 0;
         edits_.push_back(std::make_unique<nfui::Edit>());
         (void)edits_.back()->inject_theme(&palette_, &fonts_);
         (void)edits_.back()->create(p);
-        // Edit is a native control — needs explicit font adoption.
+        // Native Edit needs explicit font adoption. Use NFUI's sm body size
+        // (12 pt) — same scale SettingsDemo uses for its body inputs.
         HFONT f = (id == IDC_PADDING_EDIT)
                     ? fonts_.mono(dpi_, nfui::font_pt::sm)
                     : fonts_.regular(dpi_, nfui::font_pt::sm);
@@ -520,6 +574,7 @@ private:
 
     nfui::ThemePalette palette_{};
     nfui::FontCache    fonts_{};
+    HBRUSH             bg_brush_{nullptr};   // cached palette_.background brush
 
     // Owned NFUI controls. The labels / edits vectors avoid enumerating
     // 6 distinct member variables for the row labels; the buttons that

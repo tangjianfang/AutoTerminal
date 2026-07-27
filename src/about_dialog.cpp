@@ -24,7 +24,9 @@ public:
         : inst_(inst), parent_(parent),
           palette_(nfui::theme_palette(nfui::resolve_theme_mode(nfui::ThemeMode::system))) {}
 
-    ~AboutWindow() override = default;
+    ~AboutWindow() override {
+        if (bg_brush_) DeleteObject(bg_brush_);
+    }
 
     bool show() {
         if (!create({inst_, kClass, L"About AutoTerminal",
@@ -34,25 +36,27 @@ public:
                      parent_, nullptr})) {
             return false;
         }
-        // Title (serif, xl size).
+        // Title (lg size, semibold, warm-ink colour so it doesn't look fake-black).
         nfui::ControlCreateParams p{inst_, hwnd(), 0, L"AutoTerminal",
                                     20, 18, 340, 32};
         (void)title_.inject_theme(&palette_, &fonts_);
         nfui::TextStyle ts{};
         ts.use_semibold = true;
-        ts.font_size_pt = nfui::font_pt::xl;
+        ts.font_size_pt = nfui::font_pt::lg;
+        ts.foreground   = palette_.text;
         (void)title_.set_style(ts);
         (void)title_.create(p);
 
-        // Body (regular sans, sm size).
+        // Body — base size + text_secondary for an understated description.
         nfui::ControlCreateParams bp{inst_, hwnd(), 0,
             L"Tiling terminal windows onto a chosen display.\n\n"
             L"Tip: right-click the tray icon for Settings.",
             20, 56, 340, 80};
         (void)body_.inject_theme(&palette_, &fonts_);
         nfui::TextStyle bs{};
-        bs.font_size_pt = nfui::font_pt::sm;
-        bs.single_line = false;
+        bs.font_size_pt = nfui::font_pt::base;
+        bs.foreground   = palette_.text_secondary;
+        bs.single_line  = false;
         bs.end_ellipsis = false;
         (void)body_.set_style(bs);
         (void)body_.create(bp);
@@ -73,12 +77,22 @@ public:
 
 protected:
     LRESULT handle_message(UINT m, WPARAM w, LPARAM l) override {
-        if (m == WM_ERASEBKGND) return 1;
+        if (m == WM_ERASEBKGND) {
+            // Match the panel surface so the StaticText titles blend in
+            // (NFUI Window otherwise paints COLOR_WINDOW — a cold grey).
+            HDC dc = reinterpret_cast<HDC>(w);
+            RECT rc{};
+            GetClientRect(hwnd(), &rc);
+            FillRect(dc, &rc, bg_brush());
+            return 1;
+        }
         if (m == WM_CTLCOLORSTATIC) {
             HDC dc = reinterpret_cast<HDC>(w);
             SetBkMode(dc, TRANSPARENT);
-            // Background is theme.surface so labels blend with the panel.
-            return reinterpret_cast<LRESULT>(CreateSolidBrush(palette_.background.rgb));
+            // text_secondary is a warm grey (#6B6862 light) that reads as
+            // ink-on-cream instead of harsh near-black on white.
+            SetTextColor(dc, palette_.text_secondary.rgb);
+            return reinterpret_cast<LRESULT>(bg_brush());
         }
         return nfui::Window::handle_message(m, w, l);
     }
@@ -99,10 +113,16 @@ protected:
     LRESULT on_notify(int /*control_id*/, NMHDR* /*header*/) override { return 0; }
 
 private:
+    HBRUSH bg_brush() noexcept {
+        if (!bg_brush_) bg_brush_ = CreateSolidBrush(palette_.background.rgb);
+        return bg_brush_;
+    }
+
     HINSTANCE inst_{};
     HWND parent_{};
     nfui::ThemePalette palette_{};
     nfui::FontCache    fonts_{};
+    HBRUSH             bg_brush_{nullptr};
     nfui::StaticText   title_{};
     nfui::StaticText   body_{};
     nfui::Button       ok_{};
