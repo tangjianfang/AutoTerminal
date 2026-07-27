@@ -98,7 +98,7 @@ target_link_libraries(autoterminal_core PUBLIC
 if(WIN32)
     target_link_libraries(autoterminal_core PUBLIC
         User32 Gdi32 Shell32 Advapi32 SetupApi
-        Ole32 Propsys Dwmapi Comctl32)
+        Ole32 Propsys Dwmapi Comctl32 Comdlg32)
 endif()
 
 # ---- main executable ------------------------------------------------------

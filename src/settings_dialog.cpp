@@ -17,6 +17,10 @@
 #include <nfui/Theme.hpp>
 #include <nfui/Window.hpp>
 
+#include <commdlg.h>      // GetOpenFileNameW / GetSaveFileNameW (excluded by WIN32_LEAN_AND_MEAN)
+#include <filesystem>     // std::filesystem::copy_file / path
+#include <system_error>   // std::error_code
+
 #include <algorithm>
 #include <memory>
 #include <optional>
@@ -35,7 +39,7 @@ constexpr wchar_t kTitle[] = L"AutoTerminal Settings";
 // DpiScale::logical_to_pixels at build time so the dialog stays aligned at any
 // DPI. Heights here are at 100 % DPI; bump kDefaultHeightPx if you add rows.
 constexpr int kDefaultWidthPx  = 580;
-constexpr int kDefaultHeightPx = 440;
+constexpr int kDefaultHeightPx = 470;   // +1 row: "Config file" Export/Import
 constexpr int kRowH            = 24;
 constexpr int kGap             = 6;
 constexpr int kGapTight        = 4;
@@ -53,6 +57,8 @@ constexpr int kBtnGap          = 8;
 constexpr int kOpenCfgBtnW     = 150;
 constexpr int kExitBtnW        = 150;
 constexpr int kRefreshBtnW     = 80;
+constexpr int kExportBtnW      = 100;
+constexpr int kImportBtnW      = 100;
 constexpr int kProcListH       = 72;
 constexpr int kComboDropHeight = 220;
 
@@ -84,6 +90,10 @@ enum CtrlId {
     IDC_APPLY_BTN,
     IDC_CANCEL_BTN,
     IDC_EXIT_BTN,
+
+    IDC_CFGFILE_LABEL,           // "Config file" row label
+    IDC_EXPORT_CONFIG_BTN,       // export config.toml to a chosen path
+    IDC_IMPORT_CONFIG_BTN,       // load a chosen config.toml into the dialog
 };
 
 enum CaptureState { CapNone, CapTile, CapPause };
@@ -126,6 +136,46 @@ bool listbox_contains(HWND lb, const std::wstring& s) {
         if (s == buf) return true;
     }
     return false;
+}
+
+// Common-dialog file pickers for Export/Import. Both open the browse box at
+// the config directory and pin the TOML filter; return false on cancel.
+bool pick_save_path(HWND owner, const std::wstring& initial_dir,
+                    std::wstring& out_path) {
+    wchar_t buf[MAX_PATH] = L"config.toml";
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize     = sizeof(ofn);
+    ofn.hwndOwner       = owner;
+    ofn.lpstrFilter     = L"TOML config (*.toml)\0*.toml\0All files (*.*)\0*.*\0";
+    ofn.nFilterIndex    = 1;
+    ofn.lpstrFile       = buf;
+    ofn.nMaxFile        = MAX_PATH;
+    ofn.lpstrInitialDir = initial_dir.c_str();
+    ofn.lpstrTitle      = L"Export AutoTerminal config";
+    ofn.lpstrDefExt     = L"toml";
+    ofn.Flags           = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetSaveFileNameW(&ofn)) return false;
+    out_path = buf;
+    return true;
+}
+
+bool pick_open_path(HWND owner, const std::wstring& initial_dir,
+                    std::wstring& out_path) {
+    wchar_t buf[MAX_PATH] = L"";
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize     = sizeof(ofn);
+    ofn.hwndOwner       = owner;
+    ofn.lpstrFilter     = L"TOML config (*.toml)\0*.toml\0All files (*.*)\0*.*\0";
+    ofn.nFilterIndex    = 1;
+    ofn.lpstrFile       = buf;
+    ofn.nMaxFile        = MAX_PATH;
+    ofn.lpstrInitialDir = initial_dir.c_str();
+    ofn.lpstrTitle      = L"Import AutoTerminal config";
+    ofn.lpstrDefExt     = L"toml";
+    ofn.Flags           = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&ofn)) return false;
+    out_path = buf;
+    return true;
 }
 
 // --------------- the NFUI-backed window subclass --------------------------
@@ -220,6 +270,8 @@ protected:
             case IDC_APPLY_BTN:        if (code == BN_CLICKED) { on_apply();             return true; } break;
             case IDC_CANCEL_BTN:       if (code == BN_CLICKED) { on_close();             return true; } break;
             case IDC_OPEN_CONFIG_BTN:  if (code == BN_CLICKED) { UIBridge::open_config_file(); return true; } break;
+            case IDC_EXPORT_CONFIG_BTN:if (code == BN_CLICKED) { on_export_config();     return true; } break;
+            case IDC_IMPORT_CONFIG_BTN:if (code == BN_CLICKED) { on_import_config();     return true; } break;
             case IDC_EXIT_BTN:         if (code == BN_CLICKED) { on_exit_btn();          return true; } break;
             default: break;
         }
@@ -321,6 +373,15 @@ private:
         add_label(x, y, label_w, px(kRowH), L"&Log level", IDC_LOGLEVEL_LABEL);
         add_combo(x + label_w + px(kGapTight + 2), y, px(kLogLevelComboW),
                   IDC_LOGLEVEL_COMBO, px(kComboDropHeight));
+        y += px(kRowH) + px(kGap);
+
+        // -- Config file (export / import) --------------------------------
+        add_label(x, y, label_w, px(kRowH), L"Config &file", IDC_CFGFILE_LABEL);
+        int cf_x = x + label_w + px(kGapTight + 2);
+        add_button(cf_x, y, px(kExportBtnW), px(kRowH),
+                   L"Export...", IDC_EXPORT_CONFIG_BTN);
+        add_button(cf_x + px(kExportBtnW) + px(kBtnGap), y, px(kImportBtnW),
+                   px(kRowH), L"Import...", IDC_IMPORT_CONFIG_BTN);
         y += px(kRowH) + px(kGapBeforeButton);
 
         // -- Buttons row --------------------------------------------------
@@ -439,6 +500,8 @@ private:
             case IDC_APPLY_BTN:        return btn_apply_;
             case IDC_CANCEL_BTN:       return btn_cancel_;
             case IDC_OPEN_CONFIG_BTN:  return btn_open_cfg_;
+            case IDC_EXPORT_CONFIG_BTN:return btn_export_;
+            case IDC_IMPORT_CONFIG_BTN:return btn_import_;
             case IDC_EXIT_BTN:         return exit_btn_;
             case IDC_PROC_NAME_ADD:    return btn_proc_name_add_;
             case IDC_PROC_PICK_ADD:    return btn_proc_pick_add_;
@@ -685,6 +748,66 @@ private:
         if (rc == IDYES && cbs_.on_exit) cbs_.on_exit();
     }
 
+    // Export the on-disk config.toml to a user-chosen path. We copy the live
+    // config file rather than the dialog's in-memory cfg_ so "Export" means
+    // "back up exactly what the daemon is using right now" — no surprises from
+    // un-Applied edits. If no on-disk file exists yet, fall back to writing
+    // cfg_ so the export is never empty.
+    void on_export_config() {
+        std::wstring target;
+        std::wstring dir = config_dir().wstring();
+        if (!pick_save_path(hwnd(), dir, target)) return;
+        std::error_code ec;
+        const auto src = config_path();
+        if (std::filesystem::exists(src, ec)) {
+            std::filesystem::copy_file(src, std::filesystem::path(target),
+                std::filesystem::copy_options::overwrite_existing, ec);
+            if (ec) {
+                AT_LOG_ERROR("Export copy_file failed: %s", ec.message().c_str());
+                MessageBoxW(hwnd(),
+                    L"Export failed: could not copy the config file.",
+                    L"Export config", MB_ICONERROR | MB_OK);
+                return;
+            }
+        } else {
+            save_config(std::filesystem::path(target), cfg_);
+        }
+        AT_LOG_INFO("Exported config to %ls", target.c_str());
+        MessageBoxW(hwnd(), L"Config exported successfully.",
+                    L"Export config", MB_ICONINFORMATION | MB_OK);
+    }
+
+    // Import a chosen config.toml into the dialog for review. The user must
+    // click Apply to commit it to the daemon / disk — Import never writes.
+    void on_import_config() {
+        std::wstring picked;
+        std::wstring dir = config_dir().wstring();
+        if (!pick_open_path(hwnd(), dir, picked)) return;
+        auto loaded = load_config(std::filesystem::path(picked));
+        if (!loaded) {
+            AT_LOG_WARN("Import parse failed: %ls", picked.c_str());
+            MessageBoxW(hwnd(),
+                L"Import failed: the selected file is not a valid "
+                L"AutoTerminal config.",
+                L"Import config", MB_ICONERROR | MB_OK);
+            return;
+        }
+        cfg_ = std::move(*loaded);
+        pending_tile_.reset();
+        pending_pause_.reset();
+        populate_monitors();
+        populate_log_levels();
+        apply_text_widgets();
+        apply_check_state();
+        refresh_hotkey_labels();
+        populate_configured_list();
+        AT_LOG_INFO("Imported config from %ls (review and Apply to commit)",
+                    picked.c_str());
+        MessageBoxW(hwnd(),
+            L"Config imported. Review the settings and click Apply to commit.",
+            L"Import config", MB_ICONINFORMATION | MB_OK);
+    }
+
     Hotkey tile_hk()  const { return pending_tile_  ? *pending_tile_  : cfg_.hotkey_tile; }
     Hotkey pause_hk() const { return pending_pause_ ? *pending_pause_ : cfg_.hotkey_toggle_pause; }
 
@@ -712,6 +835,8 @@ private:
     nfui::Button btn_apply_{};
     nfui::Button btn_cancel_{};
     nfui::Button btn_open_cfg_{};
+    nfui::Button btn_export_{};
+    nfui::Button btn_import_{};
     nfui::Button exit_btn_{};
     nfui::Button btn_proc_name_add_{};
     nfui::Button btn_proc_pick_add_{};

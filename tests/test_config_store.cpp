@@ -116,3 +116,36 @@ TEST(ConfigStore, HotkeyFormatRoundTrip) {
     ASSERT_TRUE(hk.has_value());
     EXPECT_EQ(format_hotkey(*hk), L"Ctrl+Alt+T");
 }
+
+TEST(ConfigStore, ExportImportRoundTrip) {
+    // Mirrors the Settings dialog's Export (copy_file of the live config) then
+    // Import (load_config of the copy) path: a config saved to file A, copied
+    // verbatim to file B, must load back identically.
+    auto file_a = tmp_file("export_src.toml");
+    auto file_b = tmp_file("export_dst.toml");
+    Config cfg;
+    cfg.process_names = {L"WindowsTerminal.exe", L"wezterm.exe"};
+    cfg.target_monitor = L"\\\\.\\DISPLAY2";
+    cfg.padding = 12;
+    cfg.autostart = true;
+    cfg.log_level = LogLevel::Warn;
+    cfg.hotkey_tile = Hotkey{MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
+                             static_cast<UINT>('T')};
+    save_config(file_a, cfg);
+
+    std::error_code ec;
+    std::filesystem::copy_file(file_a, file_b,
+        std::filesystem::copy_options::overwrite_existing, ec);
+    ASSERT_FALSE(ec) << "copy_file failed: " << ec.message();
+
+    auto loaded = load_config(file_b);
+    ASSERT_TRUE(loaded.has_value());
+    ASSERT_EQ(loaded->process_names.size(), cfg.process_names.size());
+    EXPECT_EQ(loaded->process_names[0], L"WindowsTerminal.exe");
+    EXPECT_EQ(loaded->process_names[1], L"wezterm.exe");
+    EXPECT_EQ(loaded->target_monitor, cfg.target_monitor);
+    EXPECT_EQ(loaded->padding, cfg.padding);
+    EXPECT_EQ(loaded->autostart, cfg.autostart);
+    EXPECT_EQ(loaded->log_level, cfg.log_level);
+    EXPECT_EQ(loaded->hotkey_tile.vk, cfg.hotkey_tile.vk);
+}
