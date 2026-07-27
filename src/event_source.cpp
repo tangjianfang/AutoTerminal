@@ -11,8 +11,9 @@ namespace {
 constexpr UINT EVENT_GLOBAL_CREATE  = EVENT_OBJECT_CREATE;
 constexpr UINT EVENT_GLOBAL_DESTROY = EVENT_OBJECT_DESTROY;
 constexpr UINT EVENT_GLOBAL_LOC     = EVENT_OBJECT_LOCATIONCHANGE;
-constexpr UINT_PTR kDebounceTimerId = 0xA70E0001;
-constexpr UINT kDebounceMs          = 150;
+constexpr UINT_PTR kDebounceTimerId     = 0xA70E0001;
+constexpr UINT kDebounceMs              = 150;
+constexpr UINT_PTR kStartupDelayTimerId = 0xA70E0002;
 
 } // namespace
 
@@ -70,6 +71,11 @@ void EventSource::stop() {
         KillTimer(hwnd_, debounce_timer_id_);
         debounce_timer_id_ = 0;
     }
+    if (startup_timer_id_) {
+        KillTimer(hwnd_, startup_timer_id_);
+        startup_timer_id_ = 0;
+    }
+    startup_delay_active_ = false;
     if (hwnd_) {
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
@@ -116,8 +122,18 @@ void EventSource::request_exit() {
     PostMessageW(hwnd_, WM_AT_EXIT, 0, 0);
 }
 
+void EventSource::arm_startup_delay(int seconds) {
+    if (seconds <= 0 || !hwnd_) return;
+    if (startup_timer_id_) KillTimer(hwnd_, startup_timer_id_);
+    startup_delay_active_ = true;
+    startup_timer_id_ = SetTimer(hwnd_, kStartupDelayTimerId,
+                                 static_cast<UINT>(seconds) * 1000u, nullptr);
+    AT_LOG_INFO("Autostart startup delay armed: %d s", seconds);
+}
+
 void EventSource::arm_debounce() {
     if (paused_) return;
+    if (startup_delay_active_) return;   // hold off auto-tile during the delay
     if (debounce_timer_id_) KillTimer(hwnd_, debounce_timer_id_);
     debounce_timer_id_ = SetTimer(hwnd_, kDebounceTimerId, kDebounceMs, nullptr);
 }
@@ -158,6 +174,14 @@ LRESULT CALLBACK EventSource::wnd_proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
                 self->debounce_timer_id_ = 0;
                 AT_LOG_DEBUG("Debounce timer fired → re-tile");
                 if (self->tile_cb_) self->tile_cb_();
+            } else if (w == kStartupDelayTimerId) {
+                if (self->startup_timer_id_) {
+                    KillTimer(h, self->startup_timer_id_);
+                    self->startup_timer_id_ = 0;
+                }
+                self->startup_delay_active_ = false;
+                AT_LOG_INFO("Startup delay elapsed → catch-up tile");
+                self->fire_tile_now();
             }
             return 0;
         case WM_AT_TILE_NOW:
@@ -185,6 +209,7 @@ void CALLBACK EventSource::win_event_proc(HWINEVENTHOOK, DWORD, HWND, LONG,
         event != EVENT_GLOBAL_LOC) return;
     auto* self = instance_;
     if (!self || !self->hwnd_) return;
+    if (self->startup_delay_active_) return;   // drop; delay timer fires a catch-up tile
     PostMessageW(self->hwnd_, WM_AT_TILE_NOW, 0, 0);
 }
 

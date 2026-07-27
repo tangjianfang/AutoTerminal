@@ -54,6 +54,11 @@ public:
     void request_reload();
     void request_exit();
 
+    // Suppress WinEvent-driven auto-tiling for `seconds` after an autostart
+    // launch, then fire one catch-up tile. Explicit Tile-now requests
+    // (hotkey/tray) still tile immediately during the delay.
+    void arm_startup_delay(int seconds);
+
 private:
     static LRESULT CALLBACK wnd_proc(HWND, UINT, WPARAM, LPARAM);
     static void CALLBACK win_event_proc(HWINEVENTHOOK, DWORD, HWND, LONG, LONG,
@@ -73,11 +78,13 @@ private:
     HWINEVENTHOOK hook_destroy_ = nullptr;
     HWINEVENTHOOK hook_loc_     = nullptr;
     UINT_PTR debounce_timer_id_ = 0;
+    UINT_PTR startup_timer_id_  = 0;
     TileCallback    tile_cb_;
     ReloadCallback  reload_cb_;
     PauseCallback   pause_cb_;
     CommandCallback cmd_cb_;
     bool paused_ = false;
+    bool startup_delay_active_ = false;
 };
 
 } // namespace autoterminal

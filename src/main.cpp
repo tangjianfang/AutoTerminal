@@ -227,6 +227,15 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, LPWSTR cmdline, int show_cmd) {
     }
     g_events = &events;
 
+    // Autostart delayed first-tile: when launched via --silent (the autostart
+    // entry), suppress the WinEvent-driven auto-tile for N seconds so we
+    // don't tile an empty/partial window set before the user's terminals open
+    // at logon. After the delay one catch-up tile fires; explicit Tile-now
+    // (hotkey/tray) still works during the delay.
+    if (g_silent && g_config.autostart_delay > 0) {
+        events.arm_startup_delay(g_config.autostart_delay);
+    }
+
     UIBridge ui;
     ui.set_command_callback([&](TrayCommand c) {
         switch (c) {

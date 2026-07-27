@@ -22,6 +22,7 @@ struct Config {
     Hotkey hotkey_tile       {MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'T'};
     Hotkey hotkey_toggle_pause{MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, 'T'};
     bool autostart = false;
+    int autostart_delay = 0;   // seconds to suppress auto-tile after an autostart launch (0 = off)
     LogLevel log_level = LogLevel::Info;
     int padding = 0;
 };

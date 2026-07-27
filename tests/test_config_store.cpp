@@ -91,6 +91,27 @@ TEST(ConfigStore, PreservesProcessNameCasing) {
     EXPECT_EQ(loaded->process_names[0], L"WezTerm.exe");
 }
 
+TEST(ConfigStore, AutostartDelayRoundTrip) {
+    auto file_path = tmp_file("delay.toml");
+    Config cfg;
+    cfg.autostart_delay = 15;
+    save_config(file_path, cfg);
+    auto loaded = load_config(file_path);
+    ASSERT_TRUE(loaded.has_value());
+    EXPECT_EQ(loaded->autostart_delay, 15);
+}
+
+TEST(ConfigStore, AutostartDelayClampsNegative) {
+    auto file_path = tmp_file("delay_neg.toml");
+    {
+        std::ofstream f(file_path);
+        f << "[ui]\nautostart_delay = -5\n";
+    }
+    auto loaded = load_config(file_path);
+    ASSERT_TRUE(loaded.has_value());
+    EXPECT_EQ(loaded->autostart_delay, 0);
+}
+
 TEST(ConfigStore, HotkeyParseBasic) {
     auto hk = parse_hotkey(L"Ctrl+Alt+T");
     ASSERT_TRUE(hk.has_value());

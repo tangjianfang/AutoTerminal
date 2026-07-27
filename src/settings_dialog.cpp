@@ -40,7 +40,7 @@ constexpr wchar_t kTitle[] = L"AutoTerminal Settings";
 // DpiScale::logical_to_pixels at build time so the dialog stays aligned at any
 // DPI. Heights here are at 100 % DPI; bump kDefaultHeightPx if you add rows.
 constexpr int kDefaultWidthPx  = 580;
-constexpr int kDefaultHeightPx = 500;   // +2 rows: Config file + Filter running
+constexpr int kDefaultHeightPx = 530;   // +3 rows: Config file + Filter + Start delay
 constexpr int kRowH            = 24;
 constexpr int kGap             = 6;
 constexpr int kGapTight        = 4;
@@ -98,6 +98,9 @@ enum CtrlId {
 
     IDC_PROC_FILTER_LABEL,       // "Filter running" label
     IDC_PROC_FILTER_EDIT,        // live-filter the running-process picker
+
+    IDC_AUTOSTART_DELAY_LABEL,   // "Start delay" label
+    IDC_AUTOSTART_DELAY_EDIT,    // seconds to delay first auto-tile on autostart
 };
 
 enum CaptureState { CapNone, CapTile, CapPause };
@@ -399,6 +402,13 @@ private:
                   IDC_AUTOSTART_CHECK);
         y += px(kRowH) + px(kGap);
 
+        // -- Autostart start delay (seconds; 0 = off) ---------------------
+        add_label(x, y, label_w, px(kRowH), L"Start &delay (s)",
+                  IDC_AUTOSTART_DELAY_LABEL);
+        add_edit(x + label_w + px(kGapTight + 2), y, px(kPaddingFieldW),
+                 px(kRowH), IDC_AUTOSTART_DELAY_EDIT);
+        y += px(kRowH) + px(kGap);
+
         // -- Log level ----------------------------------------------------
         add_label(x, y, label_w, px(kRowH), L"&Log level", IDC_LOGLEVEL_LABEL);
         add_combo(x + label_w + px(kGapTight + 2), y, px(kLogLevelComboW),
@@ -462,7 +472,7 @@ private:
         nfui::ControlCreateParams p{inst_, hwnd(), id, L"",
                                     x, y, w, h,
                                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | ro_style};
-        if (id == IDC_PADDING_EDIT) p.style |= ES_NUMBER;
+        if (id == IDC_PADDING_EDIT || id == IDC_AUTOSTART_DELAY_EDIT) p.style |= ES_NUMBER;
         p.style   |= WS_BORDER;
         p.ex_style = 0;
         auto e = std::make_unique<nfui::Edit>();
@@ -799,6 +809,8 @@ private:
 
     void apply_text_widgets() {
         set_edit_int(GetDlgItem(hwnd(), IDC_PADDING_EDIT), cfg_.padding);
+        set_edit_int(GetDlgItem(hwnd(), IDC_AUTOSTART_DELAY_EDIT),
+                     cfg_.autostart_delay);
     }
 
     void apply_check_state() {
@@ -882,6 +894,10 @@ private:
         int pad_v = 0;
         if (get_edit_int(GetDlgItem(hwnd(), IDC_PADDING_EDIT), pad_v)) {
             cfg_.padding = std::max(0, pad_v);
+        }
+        int delay_v = 0;
+        if (get_edit_int(GetDlgItem(hwnd(), IDC_AUTOSTART_DELAY_EDIT), delay_v)) {
+            cfg_.autostart_delay = std::max(0, delay_v);
         }
         HWND cb = GetDlgItem(hwnd(), IDC_MONITOR_COMBO);
         int sel = static_cast<int>(SendMessageW(cb, CB_GETCURSEL, 0, 0));

@@ -118,6 +118,10 @@ std::optional<Config> load_config(const fs::path& path) {
         if (const toml::node* v = t->get("autostart"); v && v->is_boolean()) {
             cfg.autostart = v->value_or(false);
         }
+        if (const toml::node* v = t->get("autostart_delay"); v && v->is_integer()) {
+            cfg.autostart_delay = static_cast<int>(v->value_or<int64_t>(0));
+            if (cfg.autostart_delay < 0) cfg.autostart_delay = 0;
+        }
         if (const toml::node* v = t->get("log_level"); v && v->is_string()) {
             cfg.log_level = parse_level(v->value_or(std::string{"info"}));
         }
@@ -151,6 +155,7 @@ void save_config(const fs::path& path, const Config& cfg) {
     {
         toml::table ui;
         ui.insert("autostart", cfg.autostart);
+        ui.insert("autostart_delay", static_cast<int64_t>(cfg.autostart_delay));
         ui.insert("log_level", std::string(format_level(cfg.log_level)));
         root.insert("ui", std::move(ui));
     }
