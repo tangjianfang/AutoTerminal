@@ -5,6 +5,7 @@
 #include "event_source.h"
 #include "logger.h"
 #include "monitor_index.h"
+#include "preview_overlay.h"
 #include "settings_dialog.h"
 #include "tile_engine.h"
 #include "ui_bridge.h"
@@ -24,6 +25,7 @@ std::mutex g_state_mutex;
 autoterminal::Config g_config;
 autoterminal::EventSource* g_events = nullptr;
 autoterminal::UIBridge* g_ui = nullptr;
+autoterminal::OverlayManager g_overlay;
 HWND g_settings_hwnd = nullptr;
 bool g_silent = false;
 
@@ -50,42 +52,55 @@ bool has_flag(LPCWSTR cmdline, LPCWSTR flag) {
 bool perform_tile_locked_rules(const std::vector<size_t>& rule_indices) {
     if (rule_indices.empty()) return false;
     auto monitors = autoterminal::enumerate_monitors();
-    bool any_placed = false;
 
+    // Collect live windows per requested rule up front; the same counts feed
+    // plan_layouts and the apply pass below. Rules outside process_names get
+    // an empty window list and a no-op plan. The vector is keyed by RULE INDEX
+    // (not position within rule_indices) because plan_layouts invokes count_fn
+    // with the rule index, and the apply pass below addresses windows by the
+    // plan's rule_index too — so a non-contiguous rule_indices set still maps
+    // correctly.
+    std::vector<std::vector<autoterminal::WindowEntry>> windows_by_rule;
+    windows_by_rule.resize(g_config.process_names.size());
     for (size_t i : rule_indices) {
         if (i >= g_config.process_names.size()) continue;
-        const auto& name = g_config.process_names[i];
+        windows_by_rule[i] =
+            autoterminal::collect_terminal_windows({g_config.process_names[i]});
+    }
 
-        // Resolve this rule's monitor: a per-rule monitor overrides the global
-        // target_monitor; an empty/global value resolves to primary.
-        std::wstring mon_id = autoterminal::monitor_for(g_config, i);
-        if (mon_id.empty()) mon_id = g_config.target_monitor;
-        const auto* target = autoterminal::resolve_monitor(monitors, mon_id);
-        if (!target) {
+    auto plans = autoterminal::plan_layouts(g_config, monitors, rule_indices,
+        [&](size_t i) -> int {
+            return i < windows_by_rule.size()
+                       ? static_cast<int>(windows_by_rule[i].size()) : 0;
+        });
+
+    bool any_placed = false;
+    for (size_t k = 0; k < plans.size(); ++k) {
+        const auto& p = plans[k];
+        size_t i = p.rule_index;
+        if (i >= g_config.process_names.size()) continue;
+        const auto& name = p.name;
+        const auto& windows = windows_by_rule[i];
+
+        // Reproduce the existing fallback WARN verbatim via the plan flags.
+        if (p.monitor_fell_back) {
             AT_LOG_WARN("Rule %zu ('%ls'): monitor '%s' not found — falling back to primary",
                         i, name.c_str(),
-                        autoterminal::monitor_log_label(mon_id).c_str());
-            target = autoterminal::resolve_monitor(monitors, L"");
+                        autoterminal::monitor_log_label(p.requested_monitor_id).c_str());
         }
-        if (!target) {
+        if (!p.monitor) {
             AT_LOG_WARN("Rule %zu ('%ls'): no monitors at all — skipping", i, name.c_str());
             continue;
         }
-
-        auto mode = autoterminal::layout_for(g_config, i);
-        auto windows = autoterminal::collect_terminal_windows({name});
         if (windows.empty()) {
             AT_LOG_DEBUG("Rule %zu ('%ls'): no matching windows", i, name.c_str());
             continue;
         }
-        auto layout = autoterminal::compute_layout(target->rect,
-                                                   static_cast<int>(windows.size()),
-                                                   g_config.padding, mode);
-        int placed = autoterminal::apply_layout(windows, layout);
+        int placed = autoterminal::apply_layout(windows, p.layout);
         AT_LOG_INFO("Tiled %d/%zu '%ls' into %dx%d (%s) on '%s'",
-                    placed, windows.size(), name.c_str(), layout.rows, layout.cols,
-                    autoterminal::layout_mode_name(mode).data(),
-                    autoterminal::monitor_log_label(target->friendly_name).c_str());
+                    placed, windows.size(), name.c_str(), p.layout.rows, p.layout.cols,
+                    autoterminal::layout_mode_name(p.mode).data(),
+                    autoterminal::monitor_log_label(p.monitor->friendly_name).c_str());
         if (placed > 0) any_placed = true;
     }
     return any_placed;
@@ -103,6 +118,7 @@ void on_command(autoterminal::EventSource::Command cmd) {
     switch (cmd) {
         case autoterminal::EventSource::Command::TileNow:
             perform_tile();
+            if (g_overlay.visible()) g_overlay.hide();   // committing dismisses the preview
             break;
         case autoterminal::EventSource::Command::TogglePause:
             if (g_events) {
@@ -113,6 +129,7 @@ void on_command(autoterminal::EventSource::Command cmd) {
         case autoterminal::EventSource::Command::Reload:
             if (auto cfg = autoterminal::load_config(autoterminal::config_path())) {
                 std::lock_guard<std::mutex> lock(g_state_mutex);
+                g_overlay.hide();   // stale plan — drop it before swapping config
                 g_config = *cfg;
                 AT_LOG_INFO("Config reloaded");
             } else {
@@ -132,7 +149,14 @@ void on_command(autoterminal::EventSource::Command cmd) {
                 AT_LOG_INFO("Tile-specific: tiling only '%ls'",
                             g_config.process_names[0].c_str());
                 perform_tile_locked_rules({0});
+                if (g_overlay.visible()) g_overlay.hide();
             }
+            break;
+        }
+        case autoterminal::EventSource::Command::Preview: {
+            // Toggle the read-only tiling preview overlay. No windows move.
+            std::lock_guard<std::mutex> lock(g_state_mutex);
+            g_overlay.toggle(g_config);
             break;
         }
     }
@@ -267,6 +291,13 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, LPWSTR cmdline, int show_cmd) {
     }
     g_events = &events;
 
+    // The preview overlay paints into its own windows but borrows the
+    // EventSource's HWND for its auto-hide timer, and hides itself when the
+    // display layout changes or the auto-hide timer fires.
+    g_overlay.set_event_hwnd(events.hwnd());
+    events.set_displaychange_callback([] { g_overlay.hide(); });
+    events.set_preview_hide_callback([] { g_overlay.hide(); });
+
     // Autostart delayed first-tile: when launched via --silent (the autostart
     // entry), suppress the WinEvent-driven auto-tile for N seconds so we
     // don't tile an empty/partial window set before the user's terminals open
@@ -280,6 +311,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, LPWSTR cmdline, int show_cmd) {
     ui.set_command_callback([&](TrayCommand c) {
         switch (c) {
             case TrayCmdTileNow:        events.post_tile_request(); break;
+            case TrayCmdPreview:        events.post_preview_request(); break;
             case TrayCmdTogglePause:    events.toggle_pause();     break;
             case TrayCmdReload:         events.request_reload();   break;
             case TrayCmdExit:           events.request_exit();     break;
@@ -367,6 +399,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, LPWSTR cmdline, int show_cmd) {
 
     AT_LOG_INFO("==== AutoTerminal exiting ====");
     ui.shutdown();
+    g_overlay.shutdown();
     events.stop();
     if (mutex) {
         ReleaseMutex(mutex);

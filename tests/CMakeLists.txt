@@ -3,6 +3,7 @@ add_executable(autoterminal_tests
     test_config_store.cpp
     test_hotkey.cpp
     test_monitor_index_layout.cpp
+    test_preview_plan.cpp
     test_process_lister.cpp
     test_window_manager_match.cpp
 )

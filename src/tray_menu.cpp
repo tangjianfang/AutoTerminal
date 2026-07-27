@@ -15,6 +15,7 @@ HMENU build_tray_menu(const Config& cfg) {
     auto popup = menu.make_popup();
     menu.builder(popup)
         .item      (L"&Tile now",             TrayCmdTileNow)
+        .item      (L"Pre&view tiling",       TrayCmdPreview)
         .item      (L"&Pause auto-tile",      TrayCmdTogglePause)
         .separator ()
         .check_item(L"Start with &Windows",  TrayCmdToggleAutostart, cfg.autostart)

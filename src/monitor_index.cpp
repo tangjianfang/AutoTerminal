@@ -107,4 +107,44 @@ std::string monitor_log_label(const std::wstring& s) {
     return out;
 }
 
+std::vector<PlannedRule> plan_layouts(const Config& cfg,
+                                      const std::vector<MonitorInfo>& monitors,
+                                      const std::vector<size_t>& rule_indices,
+                                      const std::function<int(size_t)>& count_fn) {
+    std::vector<PlannedRule> out;
+    out.reserve(rule_indices.size());
+    for (size_t i : rule_indices) {
+        PlannedRule p;
+        p.rule_index = i;
+        if (i < cfg.process_names.size()) {
+            p.name = cfg.process_names[i];
+            p.mode = layout_for(cfg, i);
+
+            // Monitor fallback chain — must match perform_tile_locked_rules
+            // exactly so the preview shows what an actual tile would do.
+            std::wstring mon_id = monitor_for(cfg, i);
+            if (mon_id.empty()) mon_id = cfg.target_monitor;
+            p.requested_monitor_id = mon_id;
+            const MonitorInfo* target = resolve_monitor(monitors, mon_id);
+            if (!target) {
+                // First lookup failed → try primary. Flag it so the caller can
+                // emit the same "falling back to primary" WARN as the real path
+                // (matches perform_tile_locked_rules exactly, including the
+                // zero-monitors edge where primary also fails).
+                p.monitor_fell_back = true;
+                target = resolve_monitor(monitors, L"");
+            }
+            p.monitor = target;
+
+            int count = count_fn ? count_fn(i) : 0;
+            p.window_count = count;
+            if (target && count > 0) {
+                p.layout = compute_layout(target->rect, count, cfg.padding, p.mode);
+            }
+        }
+        out.push_back(std::move(p));
+    }
+    return out;
+}
+
 } // namespace autoterminal

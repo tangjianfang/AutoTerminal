@@ -75,6 +75,7 @@ void EventSource::stop() {
         KillTimer(hwnd_, startup_timer_id_);
         startup_timer_id_ = 0;
     }
+    KillTimer(hwnd_, kPreviewTimerId);   // drop any pending preview auto-hide
     startup_delay_active_ = false;
     if (hwnd_) {
         DestroyWindow(hwnd_);
@@ -102,6 +103,7 @@ void EventSource::handle_hotkey(int id) {
         case 1: cmd_cb_(Command::TileNow);    break;
         case 2: cmd_cb_(Command::TogglePause);break;
         case 3: cmd_cb_(Command::TileSpecific);break;
+        case 4: cmd_cb_(Command::Preview);    break;
         default: break;
     }
 }
@@ -121,6 +123,17 @@ void EventSource::request_reload() {
 void EventSource::request_exit() {
     if (!hwnd_) return;
     PostMessageW(hwnd_, WM_AT_EXIT, 0, 0);
+}
+void EventSource::post_preview_request() {
+    if (!hwnd_) return;
+    PostMessageW(hwnd_, WM_AT_PREVIEW, 0, 0);
+}
+
+void EventSource::set_displaychange_callback(DisplayChangeCallback cb) {
+    displaychange_cb_ = std::move(cb);
+}
+void EventSource::set_preview_hide_callback(PreviewHideCallback cb) {
+    preview_hide_cb_ = std::move(cb);
 }
 
 void EventSource::arm_startup_delay(int seconds) {
@@ -169,6 +182,7 @@ LRESULT CALLBACK EventSource::wnd_proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
         case WM_DISPLAYCHANGE:
             AT_LOG_INFO("WM_DISPLAYCHANGE → arm debounce");
             self->arm_debounce();
+            if (self->displaychange_cb_) self->displaychange_cb_();
             return 0;
         case WM_TIMER:
             if (w == kDebounceTimerId) {
@@ -183,6 +197,9 @@ LRESULT CALLBACK EventSource::wnd_proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
                 self->startup_delay_active_ = false;
                 AT_LOG_INFO("Startup delay elapsed → catch-up tile");
                 self->fire_tile_now();
+            } else if (w == kPreviewTimerId) {
+                KillTimer(h, kPreviewTimerId);
+                if (self->preview_hide_cb_) self->preview_hide_cb_();
             }
             return 0;
         case WM_AT_TILE_NOW:
@@ -190,6 +207,9 @@ LRESULT CALLBACK EventSource::wnd_proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
             return 0;
         case WM_AT_TOGGLE_PAUSE:
             self->fire_pause();
+            return 0;
+        case WM_AT_PREVIEW:
+            if (self->cmd_cb_) self->cmd_cb_(Command::Preview);
             return 0;
         case WM_AT_RELOAD:
             if (self->reload_cb_) self->reload_cb_();

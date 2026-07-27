@@ -11,6 +11,12 @@ inline constexpr UINT WM_AT_TILE_NOW     = WM_USER + 100;
 inline constexpr UINT WM_AT_TOGGLE_PAUSE = WM_USER + 101;
 inline constexpr UINT WM_AT_RELOAD       = WM_USER + 102;
 inline constexpr UINT WM_AT_EXIT         = WM_USER + 103;
+inline constexpr UINT WM_AT_PREVIEW      = WM_USER + 104;
+
+// Auto-hide timer for the tiling preview overlay. Shared with preview_overlay.cpp
+// so the overlay can arm it on the EventSource's HWND and the EventSource can
+// fire the hide callback + kill it on shutdown.
+inline constexpr UINT_PTR kPreviewTimerId = 0xA70E0003;
 
 // Single-instance named mutex (per-user session).
 inline constexpr wchar_t kSingletonMutexName[]    = L"Local\\AutoTerminal.singleton.v1";
@@ -26,12 +32,14 @@ public:
     EventSource(const EventSource&) = delete;
     EventSource& operator=(const EventSource&) = delete;
 
-    enum class Command { TileNow, TogglePause, Reload, Exit, TileSpecific };
+    enum class Command { TileNow, TogglePause, Reload, Exit, TileSpecific, Preview };
 
     using TileCallback    = std::function<void()>;
     using ReloadCallback  = std::function<void()>;
     using PauseCallback   = std::function<void(bool paused)>;
     using CommandCallback = std::function<void(Command)>;
+    using DisplayChangeCallback = std::function<void()>;
+    using PreviewHideCallback   = std::function<void()>;
 
     bool start();
     void stop();
@@ -53,6 +61,13 @@ public:
     void toggle_pause();
     void request_reload();
     void request_exit();
+    void post_preview_request();
+
+    // Hooks for the tiling preview overlay: fired on WM_DISPLAYCHANGE (so the
+    // overlay can hide before monitors move) and when the preview auto-hide
+    // timer fires (kPreviewTimerId). Both are no-ops when unset.
+    void set_displaychange_callback(DisplayChangeCallback cb);
+    void set_preview_hide_callback(PreviewHideCallback cb);
 
     // Suppress WinEvent-driven auto-tiling for `seconds` after an autostart
     // launch, then fire one catch-up tile. Explicit Tile-now requests
@@ -83,6 +98,8 @@ private:
     ReloadCallback  reload_cb_;
     PauseCallback   pause_cb_;
     CommandCallback cmd_cb_;
+    DisplayChangeCallback displaychange_cb_;
+    PreviewHideCallback   preview_hide_cb_;
     bool paused_ = false;
     bool startup_delay_active_ = false;
 };

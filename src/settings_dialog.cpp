@@ -40,7 +40,7 @@ constexpr wchar_t kTitle[] = L"AutoTerminal Settings";
 // DpiScale::logical_to_pixels at build time so the dialog stays aligned at any
 // DPI. Heights here are at 100 % DPI; bump kDefaultHeightPx if you add rows.
 constexpr int kDefaultWidthPx  = 580;
-constexpr int kDefaultHeightPx = 620;   // +6 rows: ... + Layout + Monitor inspector
+constexpr int kDefaultHeightPx = 650;   // +7 rows: ... + Layout + Monitor + preview hk
 constexpr int kRowH            = 24;
 constexpr int kGap             = 6;
 constexpr int kGapTight        = 4;
@@ -110,9 +110,13 @@ enum CtrlId {
     IDC_PROC_LAYOUT_COMBO,       // grid / stack / monocle for the selected row
     IDC_PROC_MONITOR_LABEL,      // "Monitor" label for the selected row's binding
     IDC_PROC_MONITOR_COMBO,      // inherit / primary / <monitor> for the row
+
+    IDC_HK_PREVIEW_LABEL,        // "Preview tiling hotkey" label
+    IDC_HK_PREVIEW_DISPLAY,      // readonly hotkey display
+    IDC_HK_PREVIEW_CAPTURE,      // capture button
 };
 
-enum CaptureState { CapNone, CapTile, CapPause, CapTileSpec };
+enum CaptureState { CapNone, CapTile, CapPause, CapTileSpec, CapPreview };
 
 void set_edit_int(HWND edit, int value) {
     wchar_t buf[32];
@@ -306,6 +310,7 @@ protected:
             case IDC_HK_TILE_CAPTURE:  if (code == BN_CLICKED) { start_capture(CapTile);  return true; } break;
             case IDC_HK_PAUSE_CAPTURE: if (code == BN_CLICKED) { start_capture(CapPause); return true; } break;
             case IDC_HK_TILESPEC_CAPTURE: if (code == BN_CLICKED) { start_capture(CapTileSpec); return true; } break;
+            case IDC_HK_PREVIEW_CAPTURE:  if (code == BN_CLICKED) { start_capture(CapPreview);  return true; } break;
             case IDC_PROC_NAME_ADD:    if (code == BN_CLICKED) { on_add_named();         return true; } break;
             case IDC_PROC_PICK_REFRESH:if (code == BN_CLICKED) { refresh_running_processes(); return true; } break;
             case IDC_PROC_FILTER_EDIT: if (code == EN_CHANGE)  { refilter_running_processes(); return true; } break;
@@ -445,6 +450,14 @@ private:
                  IDC_HK_TILESPEC_DISPLAY, true);
         add_button(x + label_w + px(kGapTight + 2) + disp_w + px(kGapTight), y,
                    cap_w, px(kRowH), L"Cap&ture", IDC_HK_TILESPEC_CAPTURE);
+        y += px(kRowH) + px(kGap);
+
+        add_label(x, y, label_w, px(kRowH), L"Pre&view tiling hotkey",
+                  IDC_HK_PREVIEW_LABEL);
+        add_edit(x + label_w + px(kGapTight + 2), y, disp_w, px(kRowH),
+                 IDC_HK_PREVIEW_DISPLAY, true);
+        add_button(x + label_w + px(kGapTight + 2) + disp_w + px(kGapTight), y,
+                   cap_w, px(kRowH), L"Capt&ure", IDC_HK_PREVIEW_CAPTURE);
         y += px(kRowH) + px(kGap);
 
         // -- Autostart ----------------------------------------------------
@@ -660,6 +673,7 @@ private:
             case IDC_HK_TILE_CAPTURE:  return btn_tile_cap_;
             case IDC_HK_PAUSE_CAPTURE: return btn_pause_cap_;
             case IDC_HK_TILESPEC_CAPTURE: return btn_tilespec_cap_;
+            case IDC_HK_PREVIEW_CAPTURE:  return btn_preview_cap_;
             case IDC_APPLY_BTN:        return btn_apply_;
             case IDC_CANCEL_BTN:       return btn_cancel_;
             case IDC_OPEN_CONFIG_BTN:  return btn_open_cfg_;
@@ -1064,12 +1078,15 @@ private:
         std::wstring t = format_hotkey(tile_hk());
         std::wstring p = format_hotkey(pause_hk());
         std::wstring s = format_hotkey(tile_spec_hk());
+        std::wstring v = format_hotkey(preview_hk());
         if (cap_ == CapTile)     t = L"Press a key combo (Esc to cancel)...";
         if (cap_ == CapPause)    p = L"Press a key combo (Esc to cancel)...";
         if (cap_ == CapTileSpec) s = L"Press a key combo (Esc to cancel)...";
+        if (cap_ == CapPreview)  v = L"Press a key combo (Esc to cancel)...";
         SetWindowTextW(GetDlgItem(hwnd(), IDC_HK_TILE_DISPLAY),  t.c_str());
         SetWindowTextW(GetDlgItem(hwnd(), IDC_HK_PAUSE_DISPLAY), p.c_str());
         SetWindowTextW(GetDlgItem(hwnd(), IDC_HK_TILESPEC_DISPLAY), s.c_str());
+        SetWindowTextW(GetDlgItem(hwnd(), IDC_HK_PREVIEW_DISPLAY), v.c_str());
     }
 
     void start_capture(CaptureState cs) {
@@ -1083,6 +1100,7 @@ private:
         pending_tile_.reset();
         pending_pause_.reset();
         pending_tile_spec_.reset();
+        pending_preview_.reset();
         refresh_hotkey_labels();
     }
 
@@ -1117,11 +1135,13 @@ private:
         if (cap_ == CapTile)     pending_tile_      = hk;
         if (cap_ == CapPause)    pending_pause_     = hk;
         if (cap_ == CapTileSpec) pending_tile_spec_ = hk;
+        if (cap_ == CapPreview)  pending_preview_   = hk;
         cap_ = CapNone;
         refresh_hotkey_labels();
         int focus_id = IDC_HK_TILE_CAPTURE;
         if (finished == CapPause)    focus_id = IDC_HK_PAUSE_CAPTURE;
         if (finished == CapTileSpec) focus_id = IDC_HK_TILESPEC_CAPTURE;
+        if (finished == CapPreview)  focus_id = IDC_HK_PREVIEW_CAPTURE;
         HWND btn = GetDlgItem(hwnd(), focus_id);
         if (btn) SetFocus(btn);
     }
@@ -1173,9 +1193,11 @@ private:
         if (pending_tile_)      cfg_.hotkey_tile             = *pending_tile_;
         if (pending_pause_)     cfg_.hotkey_toggle_pause      = *pending_pause_;
         if (pending_tile_spec_) cfg_.hotkey_tile_specific     = *pending_tile_spec_;
+        if (pending_preview_)   cfg_.hotkey_preview           = *pending_preview_;
         pending_tile_.reset();
         pending_pause_.reset();
         pending_tile_spec_.reset();
+        pending_preview_.reset();
         refresh_hotkey_labels();
         if (cbs_.on_apply) cbs_.on_apply(cfg_);
         ShowWindow(hwnd(), SW_HIDE);
@@ -1243,9 +1265,10 @@ private:
             return;
         }
         cfg_ = std::move(*loaded);
-        pending_tile_.reset();
-        pending_pause_.reset();
-        pending_tile_spec_.reset();
+        // Discard any pending edits — the imported config replaces the live
+        // values, so any in-flight capture (incl. an in-progress cap_ state)
+        // must also be cleared via cancel_capture().
+        cancel_capture();
         populate_monitors();
         populate_log_levels();
         apply_text_widgets();
@@ -1266,6 +1289,7 @@ private:
     Hotkey tile_hk()      const { return pending_tile_      ? *pending_tile_      : cfg_.hotkey_tile; }
     Hotkey pause_hk()     const { return pending_pause_     ? *pending_pause_     : cfg_.hotkey_toggle_pause; }
     Hotkey tile_spec_hk() const { return pending_tile_spec_ ? *pending_tile_spec_ : cfg_.hotkey_tile_specific; }
+    Hotkey preview_hk()   const { return pending_preview_   ? *pending_preview_   : cfg_.hotkey_preview; }
 
     // -------- members -------------------------------------------------
 
@@ -1278,6 +1302,7 @@ private:
     std::optional<Hotkey> pending_tile_;
     std::optional<Hotkey> pending_pause_;
     std::optional<Hotkey> pending_tile_spec_;
+    std::optional<Hotkey> pending_preview_;
     std::vector<std::wstring> running_proc_cache_;   // last Toolhelp32 snapshot
     std::vector<LiveRule> live_rules_;  // dialog edit buffer; listbox is a view of this
     int  rename_index_ = -1;        // listbox index being renamed (-1 = add mode)
@@ -1296,6 +1321,7 @@ private:
     nfui::Button btn_tile_cap_{};
     nfui::Button btn_pause_cap_{};
     nfui::Button btn_tilespec_cap_{};
+    nfui::Button btn_preview_cap_{};
     nfui::Button btn_apply_{};
     nfui::Button btn_cancel_{};
     nfui::Button btn_open_cfg_{};

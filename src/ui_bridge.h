@@ -19,6 +19,7 @@ enum TrayCommand {
     TrayCmdReload,
     TrayCmdAbout,
     TrayCmdExit,
+    TrayCmdPreview,
 };
 
 // Notification message delivered to the EventSource's hidden window.

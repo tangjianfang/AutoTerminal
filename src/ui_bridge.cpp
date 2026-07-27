@@ -16,6 +16,7 @@ namespace {
 constexpr UINT kHotkeyIdTile         = 1;
 constexpr UINT kHotkeyIdPause        = 2;
 constexpr UINT kHotkeyIdTileSpecific = 3;
+constexpr UINT kHotkeyIdPreview      = 4;
 
 constexpr LPCWSTR kAutostartKey   = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr LPCWSTR kAutostartName = L"AutoTerminal";
@@ -270,6 +271,20 @@ void UIBridge::register_hotkeys() {
                         current_config_.hotkey_tile_specific.vk);
         }
     }
+    if (current_config_.hotkey_preview.vk != 0) {
+        if (RegisterHotKey(hwnd_, kHotkeyIdPreview,
+                           current_config_.hotkey_preview.modifiers,
+                           current_config_.hotkey_preview.vk)) {
+            std::wstring wide = format_hotkey(current_config_.hotkey_preview);
+            std::string label(wide.size(), '\0');
+            for (size_t i = 0; i < wide.size(); ++i) label[i] = static_cast<char>(wide[i] & 0x7F);
+            AT_LOG_INFO("Registered hotkey preview: %s", label.c_str());
+        } else {
+            AT_LOG_WARN("Failed to register hotkey preview (mods=0x%X vk=0x%X) - in use?",
+                        current_config_.hotkey_preview.modifiers,
+                        current_config_.hotkey_preview.vk);
+        }
+    }
 }
 
 void UIBridge::unregister_hotkeys() {
@@ -277,6 +292,7 @@ void UIBridge::unregister_hotkeys() {
     UnregisterHotKey(hwnd_, kHotkeyIdTile);
     UnregisterHotKey(hwnd_, kHotkeyIdPause);
     UnregisterHotKey(hwnd_, kHotkeyIdTileSpecific);
+    UnregisterHotKey(hwnd_, kHotkeyIdPreview);
 }
 
 void UIBridge::apply_config(const Config& cfg) {
