@@ -1,5 +1,6 @@
 // AutoTerminal — main entry point.
 
+#include "about_dialog.h"
 #include "config_store.h"
 #include "event_source.h"
 #include "logger.h"
@@ -8,6 +9,8 @@
 #include "tile_engine.h"
 #include "ui_bridge.h"
 #include "window_manager.h"
+
+#include <nfui/Application.hpp>
 
 #include <windows.h>
 
@@ -144,13 +147,21 @@ bool ping_existing_instance() {
 
 } // namespace
 
-int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR cmdline, int) {
+int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, LPWSTR cmdline, int show_cmd) {
     using namespace autoterminal;
 
     // --silent: stay in the tray, don't pop the settings window.
     //   Used by the autostart entry so logon doesn't open a window.
     // /settings: same as default for manual double-click — show settings.
     g_silent = has_flag(cmdline, L"--silent") || has_flag(cmdline, L"/silent");
+
+    // NativeFrameUI prerequisite initialization: PerMonitorV2 DPI awareness +
+    // common-control classes. Must run before any HWND (settings window,
+    // event-source message window, About / settings child controls) is
+    // created. Safe to call once here in the daemon's main thread; the
+    // static helpers are idempotent.
+    nfui::Application::initialize_process_dpi();
+    nfui::Application::initialize_common_controls();
 
     auto log_path = config_dir() / L"autoterminal.log";
     init_logger(log_path.wstring(), LogLevel::Info);
@@ -225,11 +236,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR cmdline, int) {
                 break;
             }
             case TrayCmdAbout:
-                MessageBoxW(nullptr,
-                    L"AutoTerminal\n"
-                    L"Tiling terminal windows onto a chosen display.\n\n"
-                    L"Tip: right-click the tray icon for Settings.",
-                    L"About AutoTerminal", MB_ICONINFORMATION | MB_OK);
+                show_about_dialog(events.hinstance(), g_settings_hwnd);
+                force_foreground(g_settings_hwnd);
                 break;
         }
     });

@@ -16,6 +16,7 @@ endif()
 include(FetchContent)
 set(FETCHCONTENT_QUIET OFF)
 
+# toml++ for config.toml parsing
 FetchContent_Declare(
     tomlplusplus
     GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
@@ -23,6 +24,16 @@ FetchContent_Declare(
     GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(tomlplusplus)
+
+# NativeFrameUI for themed, DPI-aware controls (Button / CheckBox / StaticText /
+# Edit / ComboBox / Menu + Window subclassing). Consumed via FetchContent's
+# SOURCE_DIR form so we pick up local edits on a clean rebuild without cloning
+# from a remote — switch to GIT_REPOSITORY once the sibling repo is published.
+FetchContent_Declare(
+    NativeFrameUI
+    SOURCE_DIR C:/tjf/github/NativeFrameUI
+)
+FetchContent_MakeAvailable(NativeFrameUI)
 
 option(AUTOTERMINAL_BUILD_TESTS "Build unit tests" ON)
 if(AUTOTERMINAL_BUILD_TESTS)
@@ -47,9 +58,22 @@ add_library(autoterminal_core STATIC
     src/event_source.cpp
     src/ui_bridge.cpp
     src/settings_dialog.cpp
+    src/tray_menu.cpp
+    src/about_dialog.cpp
 )
 target_include_directories(autoterminal_core PUBLIC src)
-target_link_libraries(autoterminal_core PUBLIC tomlplusplus::tomlplusplus)
+target_link_libraries(autoterminal_core PUBLIC
+    tomlplusplus::tomlplusplus
+    # NativeFrameUI — per-component link (only the controls we actually use):
+    NativeFrameUI::nfui_core          # Application, Window, Control base, Theme
+    NativeFrameUI::nfui_theme         # ThemePalette
+    NativeFrameUI::nfui_window        # Window subclassing + wnd_proc
+    NativeFrameUI::nfui_button        # Owner-draw Button
+    NativeFrameUI::nfui_checkbox      # Owner-draw CheckBox
+    NativeFrameUI::nfui_text          # StaticText labels
+    NativeFrameUI::nfui_listbox       # ComboBox (monitor / log-level dropdowns)
+    NativeFrameUI::nfui_menu          # Menu builder for the tray popup
+)
 if(WIN32)
     target_link_libraries(autoterminal_core PUBLIC
         User32 Gdi32 Shell32 Advapi32 SetupApi
@@ -57,7 +81,9 @@ if(WIN32)
 endif()
 
 # ---- main executable ------------------------------------------------------
-add_executable(AutoTerminal WIN32 src/main.cpp)
+# Embed the PerMonitorV2-aware application manifest so NativeFrameUI's
+# DpiScale / dpi_of() helpers get reliable per-monitor DPI on multi-DPI setups.
+add_executable(AutoTerminal WIN32 src/main.cpp src/app.manifest)
 target_link_libraries(AutoTerminal PRIVATE autoterminal_core)
 
 # ---- tests ----------------------------------------------------------------

@@ -4,10 +4,19 @@
 #include "monitor_index.h"
 #include "ui_bridge.h"
 
-#include <windows.h>
-#include <commctrl.h>
+#include <nfui/Application.hpp>
+#include <nfui/Dpi.hpp>
+#include <nfui/Controls/Button.hpp>
+#include <nfui/Controls/CheckBox.hpp>
+#include <nfui/Controls/ComboBox.hpp>
+#include <nfui/Controls/Edit.hpp>
+#include <nfui/Controls/StaticText.hpp>
+#include <nfui/Font.hpp>
+#include <nfui/Theme.hpp>
+#include <nfui/Window.hpp>
 
 #include <algorithm>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -17,11 +26,11 @@ namespace autoterminal {
 
 namespace {
 
-constexpr wchar_t kClass[] = L"AutoTerminal.SettingsWindow.v1";
-constexpr wchar_t kTitle[] = L"AutoTerminal Settings";
+constexpr wchar_t kClass[]        = L"AutoTerminal.SettingsWindow.v1";
+constexpr wchar_t kTitle[]        = L"AutoTerminal Settings";
 
-enum CtrlId : WORD {
-    IDC_MONITOR_LABEL = 1001,
+enum CtrlId {
+    IDC_MONITOR_LABEL    = 1001,
     IDC_MONITOR_COMBO,
     IDC_PROCESS_LABEL,
     IDC_PROCESS_EDIT,
@@ -44,92 +53,7 @@ enum CtrlId : WORD {
 
 enum CaptureState { CapNone, CapTile, CapPause };
 
-HFONT get_ui_font() {
-    static HFONT font = nullptr;
-    if (font) return font;
-    NONCLIENTMETRICSW ncm{};
-    ncm.cbSize = sizeof(ncm);
-    if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
-        font = CreateFontIndirectW(&ncm.lfMessageFont);
-    } else {
-        font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-    }
-    return font;
-}
-
-HWND mk_label(HWND parent, WORD id, LPCWSTR text, int x, int y, int w, int hh) {
-    HWND ctl = CreateWindowExW(0, WC_STATIC, text, WS_CHILD | WS_VISIBLE,
-                                x, y, w, hh, parent,
-                                reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)),
-                                nullptr, nullptr);
-    SendMessageW(ctl, WM_SETFONT, reinterpret_cast<WPARAM>(get_ui_font()), TRUE);
-    return ctl;
-}
-
-HWND mk_edit(HWND parent, WORD id, bool readonly, bool number_only,
-             int x, int y, int w, int hh) {
-    DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL;
-    if (readonly)    style |= ES_READONLY;
-    if (number_only) style |= ES_NUMBER;
-    HWND ctl = CreateWindowExW(WS_EX_CLIENTEDGE, WC_EDIT, L"", style, x, y, w, hh, parent,
-                                reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)),
-                                nullptr, nullptr);
-    SendMessageW(ctl, WM_SETFONT, reinterpret_cast<WPARAM>(get_ui_font()), TRUE);
-    return ctl;
-}
-
-HWND mk_btn(HWND parent, WORD id, LPCWSTR text, int x, int y, int w, int hh) {
-    HWND ctl = CreateWindowExW(0, WC_BUTTON, text,
-                                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                                x, y, w, hh, parent,
-                                reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)),
-                                nullptr, nullptr);
-    SendMessageW(ctl, WM_SETFONT, reinterpret_cast<WPARAM>(get_ui_font()), TRUE);
-    return ctl;
-}
-
-HWND mk_check(HWND parent, WORD id, LPCWSTR text, int x, int y, int w, int hh) {
-    HWND ctl = CreateWindowExW(0, WC_BUTTON, text,
-                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-                                x, y, w, hh, parent,
-                                reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)),
-                                nullptr, nullptr);
-    SendMessageW(ctl, WM_SETFONT, reinterpret_cast<WPARAM>(get_ui_font()), TRUE);
-    return ctl;
-}
-
-HWND mk_combo(HWND parent, WORD id, int x, int y, int w, int hh) {
-    HWND ctl = CreateWindowExW(0, WC_COMBOBOX, L"",
-                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
-                                x, y, w, hh, parent,
-                                reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)),
-                                nullptr, nullptr);
-    SendMessageW(ctl, WM_SETFONT, reinterpret_cast<WPARAM>(get_ui_font()), TRUE);
-    return ctl;
-}
-
-void set_edit_int(HWND edit, int value) {
-    wchar_t buf[32];
-    swprintf_s(buf, L"%d", value);
-    SetWindowTextW(edit, buf);
-}
-
-bool get_edit_int(HWND edit, int& out) {
-    wchar_t buf[32];
-    if (GetWindowTextW(edit, buf, 32) == 0) return false;
-    int v = 0;
-    if (swscanf_s(buf, L"%d", &v) != 1) return false;
-    out = v;
-    return true;
-}
-
-bool get_edit_text(HWND edit, std::wstring& out) {
-    int len = GetWindowTextLengthW(edit);
-    if (len < 0) return false;
-    out.resize(static_cast<size_t>(len));
-    if (len > 0) GetWindowTextW(edit, out.data(), len + 1);
-    return true;
-}
+// --------------- small free-function helpers (unchanged) -------------------
 
 std::vector<std::wstring> split_csv(const std::wstring& s) {
     std::vector<std::wstring> out;
@@ -157,329 +81,468 @@ std::wstring join_csv(const std::vector<std::wstring>& v) {
     return s;
 }
 
-struct DialogState {
-    Config  cfg;
-    SettingsCallbacks cbs;
-    HWND    hwnd = nullptr;
-    HINSTANCE hi = nullptr;
-    CaptureState cap = CapNone;
-    std::optional<Hotkey> pending_tile;
-    std::optional<Hotkey> pending_pause;
-    CaptureState last_finished_cap = CapNone; // remembers what we just captured
+void set_edit_int(HWND edit, int value) {
+    wchar_t buf[32];
+    swprintf_s(buf, L"%d", value);
+    SetWindowTextW(edit, buf);
+}
 
-    static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l);
-    void on_create(HWND h, HINSTANCE hinst);
-    void on_command(WORD id, HWND ctrl);
-    LRESULT on_keydown(WPARAM vk);
-    void on_close();
-    void on_apply();
+bool get_edit_int(HWND edit, int& out) {
+    wchar_t buf[32];
+    if (GetWindowTextW(edit, buf, 32) == 0) return false;
+    int v = 0;
+    if (swscanf_s(buf, L"%d", &v) != 1) return false;
+    out = v;
+    return true;
+}
 
-    void populate_monitors();
-    void populate_log_levels();
-    void refresh_hotkey_labels();
-    void apply_text_widgets();
-    void start_capture(CaptureState cs);
-    void cancel_capture();
-    void finish_capture(WPARAM vk);
-    Hotkey tile_hk()  const { return pending_tile  ? *pending_tile  : cfg.hotkey_tile; }
-    Hotkey pause_hk() const { return pending_pause ? *pending_pause : cfg.hotkey_toggle_pause; }
-};
+bool get_edit_text(HWND edit, std::wstring& out) {
+    int len = GetWindowTextLengthW(edit);
+    if (len < 0) return false;
+    out.resize(static_cast<size_t>(len));
+    if (len > 0) GetWindowTextW(edit, out.data(), len + 1);
+    return true;
+}
 
-LRESULT CALLBACK DialogState::wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    if (m == WM_CREATE) {
-        auto* cs = reinterpret_cast<CREATESTRUCT*>(l);
-        auto* self = reinterpret_cast<DialogState*>(cs->lpCreateParams);
-        SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
-        self->on_create(h, cs->hInstance);
-        return 0;
+// --------------- the NFUI-backed window subclass --------------------------
+
+class SettingsWindow final : public nfui::Window {
+public:
+    SettingsWindow(HINSTANCE inst, Config initial, SettingsCallbacks cbs)
+        : inst_(inst), cfg_(std::move(initial)), cbs_(std::move(cbs)),
+          palette_(nfui::theme_palette(nfui::resolve_theme_mode(nfui::ThemeMode::system))) {}
+
+    bool create_main(int show_cmd) {
+        if (!create({inst_, kClass, kTitle,
+                     WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
+                     WS_EX_DLGMODALFRAME,
+                     CW_USEDEFAULT, CW_USEDEFAULT, 560, 380,
+                     nullptr, nullptr})) {
+            return false;
+        }
+
+        dpi_ = nfui::DpiScale(nfui::dpi_of(hwnd())).dpi();   // capture at create time
+
+        int row_h = 28, gap = 8;
+        int x = 16, label_w = 140, field_w = 360;
+        int y = 16;
+
+        // -- Display row ------------------------------------------------
+        add_label(x, y, label_w, row_h, L"&Display", IDC_MONITOR_LABEL);
+        add_combo(x + label_w + 8, y, field_w, IDC_MONITOR_COMBO);
+        y += row_h + gap;
+
+        // -- Processes ----------------------------------------------------
+        add_label(x, y, label_w, row_h, L"&Processes (comma-separated)",
+                  IDC_PROCESS_LABEL);
+        add_edit(x + label_w + 8, y, field_w, row_h, IDC_PROCESS_EDIT);
+        y += row_h + gap;
+
+        // -- Padding ------------------------------------------------------
+        add_label(x, y, label_w, row_h, L"&Padding (px)", IDC_PADDING_LABEL);
+        add_edit(x + label_w + 8, y, 80, row_h, IDC_PADDING_EDIT);
+        y += row_h + gap;
+
+        // -- Hotkeys (display + capture) ---------------------------------
+        int cap_w = 96, disp_w = field_w - cap_w - 6;
+        add_label(x, y, label_w, row_h, L"&Tile-now hotkey", IDC_HK_TILE_LABEL);
+        add_edit(x + label_w + 8, y, disp_w, row_h, IDC_HK_TILE_DISPLAY, true);
+        add_button(x + label_w + 8 + disp_w + 6, y, cap_w, row_h,
+                   L"Captur&e", IDC_HK_TILE_CAPTURE);
+        y += row_h + gap;
+
+        add_label(x, y, label_w, row_h, L"P&ause hotkey", IDC_HK_PAUSE_LABEL);
+        add_edit(x + label_w + 8, y, disp_w, row_h, IDC_HK_PAUSE_DISPLAY, true);
+        add_button(x + label_w + 8 + disp_w + 6, y, cap_w, row_h,
+                   L"Capt&ure", IDC_HK_PAUSE_CAPTURE);
+        y += row_h + gap;
+
+        // -- Autostart ----------------------------------------------------
+        add_check(x, y, field_w + label_w, row_h,
+                  L"Start with &Windows (auto-launch at logon)",
+                  IDC_AUTOSTART_CHECK);
+        y += row_h + gap;
+
+        // -- Log level ----------------------------------------------------
+        add_label(x, y, label_w, row_h, L"&Log level", IDC_LOGLEVEL_LABEL);
+        add_combo(x + label_w + 8, y, 160, IDC_LOGLEVEL_COMBO);
+        y += row_h + gap + 8;
+
+        // -- Buttons ------------------------------------------------------
+        add_button(x, y, 150, row_h + 4, L"Open &config file...",
+                   IDC_OPEN_CONFIG_BTN);
+        int btn_w = 90, btn_gap = 8;
+        int right0 = x + label_w + 8 + field_w;
+        add_button(right0 - 2 * btn_w - btn_gap, y, btn_w, row_h + 4,
+                   L"&Apply", IDC_APPLY_BTN);
+        add_button(right0 - btn_w, y, btn_w, row_h + 4,
+                   L"Cancel", IDC_CANCEL_BTN);
+        // Exit button leftmost after Open config, prominent red-ish via
+        // secondary styling (NFUI will draw with palette.danger accent).
+        int exit_x = x + 158;
+        nfui::ButtonStyle est{};
+        est.secondary = true;
+        exit_btn_.set_style(est);
+        add_button(exit_x, y, 150, row_h + 4, L"E&xit AutoTerminal",
+                   IDC_EXIT_BTN);
+
+        // Initial state from the supplied Config.
+        populate_monitors();
+        populate_log_levels();
+        apply_text_widgets();
+        apply_check_state();
+        refresh_hotkey_labels();
+
+        ShowWindow(hwnd(), show_cmd);
+        UpdateWindow(hwnd());
+        AT_LOG_INFO("Settings window created hwnd=0x%p",
+                    static_cast<void*>(hwnd()));
+        return true;
     }
-    auto* self = reinterpret_cast<DialogState*>(GetWindowLongPtrW(h, GWLP_USERDATA));
-    if (!self) return DefWindowProcW(h, m, w, l);
-    switch (m) {
-        case WM_COMMAND:   self->on_command(LOWORD(w), reinterpret_cast<HWND>(l)); return 0;
-        case WM_KEYDOWN:   return self->on_keydown(w);
-        case WM_CLOSE:     self->on_close();  return 0;
-        case WM_CTLCOLORSTATIC: {
-            HDC dc = reinterpret_cast<HDC>(w);
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
-            return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
+
+protected:
+    // -------- message handling ----------------------------------------
+
+    LRESULT handle_message(UINT m, WPARAM w, LPARAM l) override {
+        switch (m) {
+            case WM_KEYDOWN:   return on_keydown(w);
+            case WM_CLOSE:     on_close();                  return 0;
+            case WM_ERASEBKGND:
+                // NFUI controls paint themselves; suppress erase to avoid
+                // the brief background flicker before the first paint.
+                return 1;
+            case WM_CTLCOLORSTATIC: {
+                HDC dc = reinterpret_cast<HDC>(w);
+                SetBkMode(dc, TRANSPARENT);
+                SetTextColor(dc, palette_.text.rgb);
+                return reinterpret_cast<LRESULT>(CreateSolidBrush(palette_.background.rgb));
+            }
+            case WM_DPICHANGED: {
+                dpi_ = LOWORD(w);   // per-monitor DPI of the new monitor
+                // Bump our cached NFUI fonts (next paint rebuilds them).
+                // NFUI controls query DpiScale themselves for paint, so we
+                // just need to invalidate everything.
+                InvalidateRect(hwnd(), nullptr, TRUE);
+                return 0;
+            }
+        }
+        return nfui::Window::handle_message(m, w, l);
+    }
+
+    bool on_command(int id, HWND /*src*/, UINT code) override {
+        switch (id) {
+            case IDC_HK_TILE_CAPTURE:  if (code == BN_CLICKED) { start_capture(CapTile);  return true; } break;
+            case IDC_HK_PAUSE_CAPTURE: if (code == BN_CLICKED) { start_capture(CapPause); return true; } break;
+            case IDC_APPLY_BTN:        if (code == BN_CLICKED) { on_apply();   return true; } break;
+            case IDC_CANCEL_BTN:       if (code == BN_CLICKED) { on_close();   return true; } break;
+            case IDC_OPEN_CONFIG_BTN:  if (code == BN_CLICKED) { UIBridge::open_config_file(); return true; } break;
+            case IDC_EXIT_BTN:         if (code == BN_CLICKED) { on_exit_btn(); return true; } break;
+            default: break;
+        }
+        return false;
+    }
+
+private:
+    // -------- control-builders (NFUI) ---------------------------------
+
+    void add_label(int x, int y, int w, int h, std::wstring_view text, int id) {
+        nfui::ControlCreateParams p{inst_, hwnd(), id, text, x, y, w, h};
+        labels_.push_back(std::make_unique<nfui::StaticText>());
+        labels_.back()->inject_theme(&palette_, &fonts_);
+        // Subtle body labels: sm size, left-aligned.
+        nfui::TextStyle ts{};
+        ts.font_size_pt = nfui::font_pt::sm;
+        ts.align_v = nfui::StaticTextAlignV::middle;
+        labels_.back()->set_style(ts);
+        labels_.back()->create(p);
+    }
+
+    void add_edit(int x, int y, int w, int h, int id, bool readonly = false) {
+        nfui::ControlCreateParams p{inst_, hwnd(), id, L"",
+                                    x, y, w, h,
+                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                                    (readonly ? ES_READONLY : ES_AUTOHSCROLL)};
+        if (id == IDC_PADDING_EDIT) p.style |= ES_NUMBER;
+        p.ex_style = WS_EX_CLIENTEDGE;
+        edits_.push_back(std::make_unique<nfui::Edit>());
+        edits_.back()->inject_theme(&palette_, &fonts_);
+        edits_.back()->create(p);
+        // Edit is a native control — needs explicit font adoption.
+        HFONT f = (id == IDC_PADDING_EDIT)
+                    ? fonts_.mono(dpi_, nfui::font_pt::sm)
+                    : fonts_.regular(dpi_, nfui::font_pt::sm);
+        SendMessageW(edits_.back()->hwnd(), WM_SETFONT,
+                     reinterpret_cast<WPARAM>(f), TRUE);
+    }
+
+    void add_button(int x, int y, int w, int h, std::wstring_view text, int id) {
+        nfui::ControlCreateParams p{inst_, hwnd(), id, text, x, y, w, h};
+        // Owner-draw NFUI Button paints itself; suppress native style bits.
+        switch (id) {
+            case IDC_APPLY_BTN:
+            case IDC_OPEN_CONFIG_BTN:
+            case IDC_HK_TILE_CAPTURE:
+            case IDC_HK_PAUSE_CAPTURE: {
+                // Primary accent face.
+                nfui::Button& b = button_for(id);
+                b.inject_theme(&palette_, &fonts_);
+                b.create(p);
+                break;
+            }
+            case IDC_CANCEL_BTN:
+            case IDC_EXIT_BTN: {
+                // Secondary (surface tone) face for the destructive / neutral
+                // actions so they don't compete with Apply.
+                nfui::Button& b = button_for(id);
+                nfui::ButtonStyle s{};
+                s.secondary = true;
+                b.set_style(s);
+                b.inject_theme(&palette_, &fonts_);
+                b.create(p);
+                // IDC_EXIT_BTN routes through button_for() to exit_btn_ directly,
+                // so no separate alias assignment is needed.
+                break;
+            }
         }
     }
-    return DefWindowProcW(h, m, w, l);
-}
 
-void DialogState::on_create(HWND h, HINSTANCE hinst) {
-    hwnd = h;
-    hi = hinst;
+    void add_check(int x, int y, int w, int h, std::wstring_view text, int id) {
+        (void)id;
+        nfui::ControlCreateParams p{inst_, hwnd(), id, text, x, y, w, h};
+        auto_check_.inject_theme(&palette_, &fonts_);
+        auto_check_.create(p);
+    }
 
-    int row_h = 26, gap = 8;
-    int x = 14, label_w_px = 130, field_w = 320;
-    int y = 12;
-
-    mk_label(h, IDC_MONITOR_LABEL,   L"&Display",        x,             y, label_w_px, row_h);
-    mk_combo(h, IDC_MONITOR_COMBO,                     x + label_w_px + 8, y, field_w, 220);
-    y += row_h + gap;
-
-    mk_label(h, IDC_PROCESS_LABEL,   L"&Processes (comma-separated)", x, y, label_w_px, row_h);
-    mk_edit (h, IDC_PROCESS_EDIT,    false, false,        x + label_w_px + 8, y, field_w, row_h);
-    y += row_h + gap;
-
-    mk_label(h, IDC_PADDING_LABEL,   L"&Padding (px)",   x,             y, label_w_px, row_h);
-    mk_edit (h, IDC_PADDING_EDIT,    false, true,         x + label_w_px + 8, y, 70, row_h);
-    y += row_h + gap;
-
-    int cap_w = 100, disp_w = field_w - cap_w - 6;
-    mk_label(h, IDC_HK_TILE_LABEL,   L"&Tile-now hotkey",x,             y, label_w_px, row_h);
-    mk_edit (h, IDC_HK_TILE_DISPLAY, true,  false,        x + label_w_px + 8, y, disp_w, row_h);
-    mk_btn  (h, IDC_HK_TILE_CAPTURE, L"&Capture",        x + label_w_px + 8 + disp_w + 6, y, cap_w, row_h);
-    y += row_h + gap;
-
-    mk_label(h, IDC_HK_PAUSE_LABEL,  L"P&ause hotkey",   x,             y, label_w_px, row_h);
-    mk_edit (h, IDC_HK_PAUSE_DISPLAY,true,  false,        x + label_w_px + 8, y, disp_w, row_h);
-    mk_btn  (h, IDC_HK_PAUSE_CAPTURE, L"C&apture",       x + label_w_px + 8 + disp_w + 6, y, cap_w, row_h);
-    y += row_h + gap;
-
-    HWND ac = mk_check(h, IDC_AUTOSTART_CHECK, L"Start with &Windows (auto-launch at logon)",
-                       x, y, field_w + label_w_px, row_h);
-    SendMessageW(ac, BM_SETCHECK, cfg.autostart ? BST_CHECKED : BST_UNCHECKED, 0);
-    y += row_h + gap;
-
-    mk_label(h, IDC_LOGLEVEL_LABEL,  L"&Log level",      x,             y, label_w_px, row_h);
-    mk_combo(h, IDC_LOGLEVEL_COMBO,                     x + label_w_px + 8, y, 140, 220);
-    y += row_h + gap + 10;
-
-    int btn_w_ = 90, btn_gap = 8;
-    int total_btns_w = 140 + 12 + btn_w_ + btn_gap + btn_w_;
-    int right0 = x + label_w_px + 8 + field_w;
-    mk_btn(h, IDC_OPEN_CONFIG_BTN, L"Open &config file...",
-           x, y, 140, row_h);
-    mk_btn(h, IDC_APPLY_BTN,       L"&Apply",
-           right0 - 2 * btn_w_ - btn_gap, y, btn_w_, row_h);
-    mk_btn(h, IDC_CANCEL_BTN,      L"Cancel",
-           right0 - btn_w_, y, btn_w_, row_h);
-    // Exit button — leftmost, red-ish label so it stands out. Fallback for
-    // when the tray context menu is unavailable (icon hidden in overflow,
-    // shell notification dropped, etc.).
-    HWND exit_btn = mk_btn(h, IDC_EXIT_BTN, L"E&xit AutoTerminal",
-                            x + 150, y, 140, row_h);
-    (void)exit_btn;
-    (void)btn_w_; (void)total_btns_w;
-
-    populate_monitors();
-    populate_log_levels();
-    apply_text_widgets();
-    refresh_hotkey_labels();
-
-    // Initial size: width 500, height based on final y.
-    RECT rc{0, 0, 500, y + 50};
-    AdjustWindowRectEx(&rc, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, FALSE, 0);
-    SetWindowPos(h, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top,
-                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-}
-
-void DialogState::populate_monitors() {
-    HWND combo = GetDlgItem(hwnd, IDC_MONITOR_COMBO);
-    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
-    int primary_pos = static_cast<int>(SendMessageW(combo, CB_ADDSTRING, 0,
-                         reinterpret_cast<LPARAM>(L"(primary monitor - default)")));
-    SendMessageW(combo, CB_SETITEMDATA, primary_pos, 0);
-    auto monitors = enumerate_monitors();
-    int sel = primary_pos;
-    for (size_t i = 0; i < monitors.size(); ++i) {
-        const auto& m = monitors[i];
-        std::wstring label = m.friendly_name;
-        if (m.primary) label += L"  (primary)";
-        label += L"  -  ";
-        label += m.gdi_name;
-        int pos = static_cast<int>(SendMessageW(combo, CB_ADDSTRING, 0,
-                                                 reinterpret_cast<LPARAM>(label.c_str())));
-        SendMessageW(combo, CB_SETITEMDATA, pos, static_cast<LPARAM>(i + 1));
-        if (monitors[i].friendly_name == cfg.target_monitor ||
-            monitors[i].gdi_name == cfg.target_monitor) {
-            sel = pos;
+    void add_combo(int x, int y, int w, int id) {
+        nfui::ControlCreateParams p{inst_, hwnd(), id, L"",
+                                    x, y, w, 220,
+                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                                    CBS_DROPDOWNLIST};
+        switch (id) {
+            case IDC_MONITOR_COMBO: monitor_combo_.inject_theme(&palette_, &fonts_); monitor_combo_.create(p); break;
+            case IDC_LOGLEVEL_COMBO: loglevel_combo_.inject_theme(&palette_, &fonts_); loglevel_combo_.create(p); break;
+            default: break;
         }
+        // NFUI ComboBox wraps the native control; set font.
+        HWND h = GetDlgItem(hwnd(), id);
+        HFONT f = fonts_.regular(dpi_, nfui::font_pt::sm);
+        SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(f), TRUE);
     }
-    SendMessageW(combo, CB_SETCURSEL, sel, 0);
-}
 
-void DialogState::populate_log_levels() {
-    HWND combo = GetDlgItem(hwnd, IDC_LOGLEVEL_COMBO);
-    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
-    struct L { LogLevel v; const wchar_t* name; };
-    L ls[] = {
-        { LogLevel::Debug, L"debug" },
-        { LogLevel::Info,  L"info" },
-        { LogLevel::Warn,  L"warn" },
-        { LogLevel::Error, L"error" },
-    };
-    int sel = 1;
-    for (int i = 0; i < 4; ++i) {
-        int pos = static_cast<int>(SendMessageW(combo, CB_ADDSTRING, 0,
-                                                 reinterpret_cast<LPARAM>(ls[i].name)));
-        SendMessageW(combo, CB_SETITEMDATA, pos, static_cast<LPARAM>(ls[i].v));
-        if (ls[i].v == cfg.log_level) sel = i;
-    }
-    SendMessageW(combo, CB_SETCURSEL, sel, 0);
-}
-
-void DialogState::refresh_hotkey_labels() {
-    std::wstring t  = format_hotkey(tile_hk());
-    std::wstring p  = format_hotkey(pause_hk());
-    if (cap == CapTile)  t = L"Press a key combo (Esc to cancel)...";
-    if (cap == CapPause) p = L"Press a key combo (Esc to cancel)...";
-    SetWindowTextW(GetDlgItem(hwnd, IDC_HK_TILE_DISPLAY),  t.c_str());
-    SetWindowTextW(GetDlgItem(hwnd, IDC_HK_PAUSE_DISPLAY), p.c_str());
-}
-
-void DialogState::apply_text_widgets() {
-    SetWindowTextW(GetDlgItem(hwnd, IDC_PROCESS_EDIT), join_csv(cfg.process_names).c_str());
-    set_edit_int(GetDlgItem(hwnd, IDC_PADDING_EDIT), cfg.padding);
-}
-
-void DialogState::on_command(WORD id, HWND /*ctrl*/) {
-    switch (id) {
-        case IDC_HK_TILE_CAPTURE:  start_capture(CapTile);  return;
-        case IDC_HK_PAUSE_CAPTURE: start_capture(CapPause); return;
-        case IDC_APPLY_BTN:        on_apply();   return;
-        case IDC_CANCEL_BTN:       on_close();   return;
-        case IDC_OPEN_CONFIG_BTN:  UIBridge::open_config_file(); return;
-        case IDC_EXIT_BTN: {
-            // Hide the dialog first so the user sees the desktop, then ask
-            // for confirmation — exiting kills the daemon with no undo.
-            AT_LOG_INFO("Settings: user clicked Exit AutoTerminal");
-            int rc = MessageBoxW(hwnd,
-                L"Exit AutoTerminal?\n\n"
-                L"This stops the background daemon. Tiling will no longer "
-                L"happen until you relaunch AutoTerminal.",
-                L"Exit AutoTerminal",
-                MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2);
-            if (rc == IDYES && cbs.on_exit) cbs.on_exit();
-            return;
+    nfui::Button& button_for(int id) {
+        switch (id) {
+            case IDC_HK_TILE_CAPTURE:  return btn_tile_cap_;
+            case IDC_HK_PAUSE_CAPTURE: return btn_pause_cap_;
+            case IDC_APPLY_BTN:        return btn_apply_;
+            case IDC_CANCEL_BTN:       return btn_cancel_;
+            case IDC_OPEN_CONFIG_BTN:  return btn_open_cfg_;
+            case IDC_EXIT_BTN:         return exit_btn_;
         }
-        default: return;
+        return btn_apply_;
     }
-}
 
-void DialogState::start_capture(CaptureState cs) {
-    cap = cs;
-    refresh_hotkey_labels();
-    SetFocus(hwnd);
-    SetActiveWindow(hwnd);
-}
+    // -------- state machine -------------------------------------------
 
-void DialogState::cancel_capture() {
-    cap = CapNone;
-    pending_tile.reset();
-    pending_pause.reset();
-    refresh_hotkey_labels();
-}
-
-LRESULT DialogState::on_keydown(WPARAM vk) {
-    if (cap == CapNone) return 1;
-    if (vk == VK_ESCAPE) { cancel_capture(); return 0; }
-    if (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT ||
-        vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL ||
-        vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU ||
-        vk == VK_LWIN || vk == VK_RWIN) {
-        return 0;
-    }
-    finish_capture(vk);
-    return 0;
-}
-
-void DialogState::finish_capture(WPARAM vk) {
-    UINT mods = MOD_NOREPEAT;
-    if (GetKeyState(VK_CONTROL) & 0x8000) mods |= MOD_CONTROL;
-    if (GetKeyState(VK_MENU)     & 0x8000) mods |= MOD_ALT;
-    if (GetKeyState(VK_SHIFT)    & 0x8000) mods |= MOD_SHIFT;
-    if ((GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000) mods |= MOD_WIN;
-    Hotkey hk{mods, static_cast<UINT>(vk)};
-    last_finished_cap = cap;
-    if (cap == CapTile)  pending_tile  = hk;
-    if (cap == CapPause) pending_pause = hk;
-    cap = CapNone;
-    refresh_hotkey_labels();
-    HWND btn = GetDlgItem(hwnd, last_finished_cap == CapTile
-                                   ? IDC_HK_TILE_CAPTURE
-                                   : IDC_HK_PAUSE_CAPTURE);
-    if (btn) SetFocus(btn);
-}
-
-void DialogState::on_apply() {
-    std::wstring txt;
-    if (get_edit_text(GetDlgItem(hwnd, IDC_PROCESS_EDIT), txt)) {
-        cfg.process_names = split_csv(txt);
-    }
-    int pad_v = 0;
-    if (get_edit_int(GetDlgItem(hwnd, IDC_PADDING_EDIT), pad_v)) {
-        cfg.padding = std::max(0, pad_v);
-    }
-    HWND cb = GetDlgItem(hwnd, IDC_MONITOR_COMBO);
-    int sel = static_cast<int>(SendMessageW(cb, CB_GETCURSEL, 0, 0));
-    int data = static_cast<int>(SendMessageW(cb, CB_GETITEMDATA, sel, 0));
-    if (sel <= 0 || data == 0) {
-        cfg.target_monitor.clear();
-    } else {
+    void populate_monitors() {
+        HWND combo = GetDlgItem(hwnd(), IDC_MONITOR_COMBO);
+        SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+        int primary_pos = static_cast<int>(SendMessageW(combo, CB_ADDSTRING, 0,
+                             reinterpret_cast<LPARAM>(L"(primary monitor - default)")));
+        SendMessageW(combo, CB_SETITEMDATA, primary_pos, 0);
         auto monitors = enumerate_monitors();
-        size_t mi = static_cast<size_t>(data - 1);
-        if (mi < monitors.size()) cfg.target_monitor = monitors[mi].friendly_name;
+        int sel = primary_pos;
+        for (size_t i = 0; i < monitors.size(); ++i) {
+            const auto& m = monitors[i];
+            std::wstring label = m.friendly_name;
+            if (m.primary) label += L"  (primary)";
+            label += L"  -  ";
+            label += m.gdi_name;
+            int pos = static_cast<int>(SendMessageW(combo, CB_ADDSTRING, 0,
+                                                     reinterpret_cast<LPARAM>(label.c_str())));
+            SendMessageW(combo, CB_SETITEMDATA, pos, static_cast<LPARAM>(i + 1));
+            if (monitors[i].friendly_name == cfg_.target_monitor ||
+                monitors[i].gdi_name == cfg_.target_monitor) {
+                sel = pos;
+            }
+        }
+        SendMessageW(combo, CB_SETCURSEL, sel, 0);
     }
-    HWND ll = GetDlgItem(hwnd, IDC_LOGLEVEL_COMBO);
-    int lsel = static_cast<int>(SendMessageW(ll, CB_GETCURSEL, 0, 0));
-    int ldata = static_cast<int>(SendMessageW(ll, CB_GETITEMDATA, lsel, 0));
-    cfg.log_level = static_cast<LogLevel>(ldata);
-    HWND ac = GetDlgItem(hwnd, IDC_AUTOSTART_CHECK);
-    cfg.autostart = (SendMessageW(ac, BM_GETCHECK, 0, 0) == BST_CHECKED);
-    if (pending_tile)  cfg.hotkey_tile        = *pending_tile;
-    if (pending_pause) cfg.hotkey_toggle_pause = *pending_pause;
-    pending_tile.reset();
-    pending_pause.reset();
-    refresh_hotkey_labels();
-    if (cbs.on_apply) cbs.on_apply(cfg);
-    ShowWindow(hwnd, SW_HIDE);
-}
 
-void DialogState::on_close() {
-    cancel_capture();
-    ShowWindow(hwnd, SW_HIDE);
-    if (cbs.on_close) cbs.on_close();
-}
+    void populate_log_levels() {
+        HWND combo = GetDlgItem(hwnd(), IDC_LOGLEVEL_COMBO);
+        SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+        struct L { LogLevel v; const wchar_t* name; };
+        L ls[] = {
+            { LogLevel::Debug, L"debug" },
+            { LogLevel::Info,  L"info"  },
+            { LogLevel::Warn,  L"warn"  },
+            { LogLevel::Error, L"error" },
+        };
+        int sel = 1;
+        for (int i = 0; i < 4; ++i) {
+            int pos = static_cast<int>(SendMessageW(combo, CB_ADDSTRING, 0,
+                                                     reinterpret_cast<LPARAM>(ls[i].name)));
+            SendMessageW(combo, CB_SETITEMDATA, pos, static_cast<LPARAM>(ls[i].v));
+            if (ls[i].v == cfg_.log_level) sel = i;
+        }
+        SendMessageW(combo, CB_SETCURSEL, sel, 0);
+    }
+
+    void apply_text_widgets() {
+        SetWindowTextW(GetDlgItem(hwnd(), IDC_PROCESS_EDIT),
+                       join_csv(cfg_.process_names).c_str());
+        set_edit_int(GetDlgItem(hwnd(), IDC_PADDING_EDIT), cfg_.padding);
+    }
+
+    void apply_check_state() {
+        auto_check_.set_checked(cfg_.autostart);
+    }
+
+    void refresh_hotkey_labels() {
+        std::wstring t = format_hotkey(tile_hk());
+        std::wstring p = format_hotkey(pause_hk());
+        if (cap_ == CapTile)  t = L"Press a key combo (Esc to cancel)...";
+        if (cap_ == CapPause) p = L"Press a key combo (Esc to cancel)...";
+        SetWindowTextW(GetDlgItem(hwnd(), IDC_HK_TILE_DISPLAY),  t.c_str());
+        SetWindowTextW(GetDlgItem(hwnd(), IDC_HK_PAUSE_DISPLAY), p.c_str());
+    }
+
+    void start_capture(CaptureState cs) {
+        cap_ = cs;
+        refresh_hotkey_labels();
+        SetFocus(hwnd());
+    }
+
+    void cancel_capture() {
+        cap_ = CapNone;
+        pending_tile_.reset();
+        pending_pause_.reset();
+        refresh_hotkey_labels();
+    }
+
+    LRESULT on_keydown(WPARAM vk) {
+        if (cap_ == CapNone) return 1;
+        if (vk == VK_ESCAPE) { cancel_capture(); return 0; }
+        if (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT ||
+            vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL ||
+            vk == VK_MENU  || vk == VK_LMENU  || vk == VK_RMENU ||
+            vk == VK_LWIN  || vk == VK_RWIN) {
+            return 0;
+        }
+        finish_capture(static_cast<UINT>(vk));
+        return 0;
+    }
+
+    void finish_capture(UINT vk) {
+        UINT mods = MOD_NOREPEAT;
+        if (GetKeyState(VK_CONTROL) & 0x8000) mods |= MOD_CONTROL;
+        if (GetKeyState(VK_MENU)     & 0x8000) mods |= MOD_ALT;
+        if (GetKeyState(VK_SHIFT)    & 0x8000) mods |= MOD_SHIFT;
+        if ((GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000) mods |= MOD_WIN;
+        Hotkey hk{mods, vk};
+        CaptureState finished = cap_;
+        if (cap_ == CapTile)  pending_tile_  = hk;
+        if (cap_ == CapPause) pending_pause_ = hk;
+        cap_ = CapNone;
+        refresh_hotkey_labels();
+        HWND btn = GetDlgItem(hwnd(),
+            finished == CapTile ? IDC_HK_TILE_CAPTURE : IDC_HK_PAUSE_CAPTURE);
+        if (btn) SetFocus(btn);
+    }
+
+    void on_apply() {
+        std::wstring txt;
+        if (get_edit_text(GetDlgItem(hwnd(), IDC_PROCESS_EDIT), txt)) {
+            cfg_.process_names = split_csv(txt);
+        }
+        int pad_v = 0;
+        if (get_edit_int(GetDlgItem(hwnd(), IDC_PADDING_EDIT), pad_v)) {
+            cfg_.padding = std::max(0, pad_v);
+        }
+        HWND cb = GetDlgItem(hwnd(), IDC_MONITOR_COMBO);
+        int sel = static_cast<int>(SendMessageW(cb, CB_GETCURSEL, 0, 0));
+        int data = static_cast<int>(SendMessageW(cb, CB_GETITEMDATA, sel, 0));
+        if (sel <= 0 || data == 0) {
+            cfg_.target_monitor.clear();
+        } else {
+            auto monitors = enumerate_monitors();
+            size_t mi = static_cast<size_t>(data - 1);
+            if (mi < monitors.size()) cfg_.target_monitor = monitors[mi].friendly_name;
+        }
+        HWND ll = GetDlgItem(hwnd(), IDC_LOGLEVEL_COMBO);
+        int lsel = static_cast<int>(SendMessageW(ll, CB_GETCURSEL, 0, 0));
+        int ldata = static_cast<int>(SendMessageW(ll, CB_GETITEMDATA, lsel, 0));
+        cfg_.log_level = static_cast<LogLevel>(ldata);
+        cfg_.autostart = auto_check_.checked();
+        if (pending_tile_)  cfg_.hotkey_tile        = *pending_tile_;
+        if (pending_pause_) cfg_.hotkey_toggle_pause = *pending_pause_;
+        pending_tile_.reset();
+        pending_pause_.reset();
+        refresh_hotkey_labels();
+        if (cbs_.on_apply) cbs_.on_apply(cfg_);
+        ShowWindow(hwnd(), SW_HIDE);
+    }
+
+    void on_close() {
+        cancel_capture();
+        ShowWindow(hwnd(), SW_HIDE);
+        if (cbs_.on_close) cbs_.on_close();
+    }
+
+    void on_exit_btn() {
+        int rc = MessageBoxW(hwnd(),
+            L"Exit AutoTerminal?\n\n"
+            L"This stops the background daemon. Tiling will no longer "
+            L"happen until you relaunch AutoTerminal.",
+            L"Exit AutoTerminal",
+            MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2);
+        if (rc == IDYES && cbs_.on_exit) cbs_.on_exit();
+    }
+
+    Hotkey tile_hk()  const { return pending_tile_  ? *pending_tile_  : cfg_.hotkey_tile; }
+    Hotkey pause_hk() const { return pending_pause_ ? *pending_pause_ : cfg_.hotkey_toggle_pause; }
+
+    // -------- members -------------------------------------------------
+
+    HINSTANCE inst_{};
+    Config     cfg_{};
+    SettingsCallbacks cbs_{};
+    int        dpi_{96};
+    CaptureState cap_{CapNone};
+    std::optional<Hotkey> pending_tile_;
+    std::optional<Hotkey> pending_pause_;
+
+    nfui::ThemePalette palette_{};
+    nfui::FontCache    fonts_{};
+
+    // Owned NFUI controls. The labels / edits vectors avoid enumerating
+    // 6 distinct member variables for the row labels; the buttons that
+    // need individually-accessed styling keep named members.
+    // nfui::Control (and derived) deletes both copy and move, so they cannot
+    // live in a std::vector<...> directly. We heap-allocate via unique_ptr
+    // and own them through SettingsWindow's lifetime.
+    std::vector<std::unique_ptr<nfui::StaticText>> labels_;
+    std::vector<std::unique_ptr<nfui::Edit>>       edits_;
+    nfui::Button                  btn_tile_cap_{};
+    nfui::Button                  btn_pause_cap_{};
+    nfui::Button                  btn_apply_{};
+    nfui::Button                  btn_cancel_{};
+    nfui::Button                  btn_open_cfg_{};
+    nfui::Button                  exit_btn_{};
+    nfui::CheckBox                auto_check_{};
+    nfui::ComboBox                monitor_combo_{};
+    nfui::ComboBox                loglevel_combo_{};
+};
 
 } // namespace
 
 HWND create_settings_window(HINSTANCE hinst, Config initial, SettingsCallbacks cbs) {
-    static bool registered = false;
-    if (!registered) {
-        WNDCLASSEXW wc{};
-        wc.cbSize        = sizeof(wc);
-        wc.lpfnWndProc   = DialogState::wnd_proc;
-        wc.hInstance     = hinst;
-        wc.lpszClassName = kClass;
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-        wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
-        if (!RegisterClassExW(&wc)) {
-            DWORD err = GetLastError();
-            if (err != ERROR_CLASS_ALREADY_EXISTS) {
-                AT_LOG_ERROR("SettingsDialog RegisterClassEx failed err=%lu", err);
-                return nullptr;
-            }
-        }
-        registered = true;
-    }
-    auto* state = new DialogState();
-    state->cfg = std::move(initial);
-    state->cbs = std::move(cbs);
-    HWND win = CreateWindowExW(
-        WS_EX_DLGMODALFRAME, kClass, kTitle,
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-        CW_USEDEFAULT, CW_USEDEFAULT, 500, 320,
-        nullptr, nullptr, hinst, state);
-    if (!win) {
-        delete state;
+    auto* w = new SettingsWindow(hinst, std::move(initial), std::move(cbs));
+    if (!w->create_main(SW_HIDE)) {
+        delete w;
         return nullptr;
     }
-    return win;
+    return w->hwnd();
 }
 
 void show_settings_window(HWND hwnd, bool show) {
@@ -493,8 +556,8 @@ bool settings_window_visible(HWND hwnd) {
 }
 
 bool try_settings_capture_key(HWND, WPARAM) {
-    // Hotkey capture is handled inline via the dialog's WM_KEYDOWN;
-    // this hook is reserved for future global hotkey-substitution needs.
+    // The window processes WM_KEYDOWN directly via the NFUI Window hook;
+    // this external entry point is retained for ABI compatibility.
     return false;
 }
 

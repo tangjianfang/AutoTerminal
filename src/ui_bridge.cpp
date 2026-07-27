@@ -1,5 +1,7 @@
 #include "ui_bridge.h"
 
+#include "tray_menu.h"
+
 #include <windows.h>
 #include <shellapi.h>
 
@@ -101,22 +103,11 @@ HWND create_popup_helper(HINSTANCE hinst, UIBridge* owner) {
 
 void UIBridge::show_context_menu() {
     AT_LOG_INFO("Tray right-click: showing context menu");
-    HMENU menu = CreatePopupMenu();
+    HMENU menu = build_tray_menu(current_config_);
     if (!menu) {
-        AT_LOG_ERROR("CreatePopupMenu failed err=%lu", GetLastError());
+        AT_LOG_ERROR("build_tray_menu returned nullptr");
         return;
     }
-    AppendMenuW(menu, MF_STRING,                          TrayCmdTileNow,        L"Tile now");
-    AppendMenuW(menu, MF_STRING,                          TrayCmdTogglePause,    L"Pause auto-tile");
-    AppendMenuW(menu, MF_SEPARATOR,                       0,                     nullptr);
-    UINT auto_flags = MF_STRING | (current_config_.autostart ? MF_CHECKED : 0);
-    AppendMenuW(menu, auto_flags,                         TrayCmdToggleAutostart,L"Start with Windows");
-    AppendMenuW(menu, MF_STRING,                          TrayCmdOpenConfig,     L"Open config file...");
-    AppendMenuW(menu, MF_STRING,                          TrayCmdSettings,       L"Settings...");
-    AppendMenuW(menu, MF_STRING,                          TrayCmdReload,         L"Reload config");
-    AppendMenuW(menu, MF_SEPARATOR,                       0,                     nullptr);
-    AppendMenuW(menu, MF_STRING,                          TrayCmdAbout,          L"About AutoTerminal");
-    AppendMenuW(menu, MF_STRING,                          TrayCmdExit,           L"Exit AutoTerminal");
 
     POINT pt{};
     GetCursorPos(&pt);
@@ -124,7 +115,8 @@ void UIBridge::show_context_menu() {
     // The popup helper is a real, visible (but 1x1 and off-screen) top-level
     // window. A 0x0 invisible window cannot take foreground on Win10/11, so
     // TrackPopupMenu returns 0 with no menu ever displayed — this is the bug
-    // we're working around.
+    // we're working around. The NFUI Menu helper applies a themed MENUINFO
+    // background brush; the OS owns menu rendering.
     HWND owner = helper_hwnd_ ? helper_hwnd_ : hwnd_;
     if (!owner) {
         AT_LOG_ERROR("No owner window for tray popup");
