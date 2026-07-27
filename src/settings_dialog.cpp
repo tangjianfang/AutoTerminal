@@ -18,6 +18,7 @@
 #include <nfui/Window.hpp>
 
 #include <commdlg.h>      // GetOpenFileNameW / GetSaveFileNameW (excluded by WIN32_LEAN_AND_MEAN)
+#include <commctrl.h>     // SetWindowSubclass / DefSubclassProc (listbox drag reorder)
 #include <filesystem>     // std::filesystem::copy_file / path
 #include <system_error>   // std::error_code
 
@@ -287,6 +288,7 @@ protected:
             case IDC_PROC_FILTER_EDIT: if (code == EN_CHANGE)  { refilter_running_processes(); return true; } break;
             case IDC_PROC_PICK_ADD:    if (code == BN_CLICKED) { on_add_picked();        return true; } break;
             case IDC_PROC_REMOVE:      if (code == BN_CLICKED) { on_remove_selected();   return true; } break;
+            case IDC_PROC_LIST:        if (code == LBN_DBLCLK) { on_rename_selected();    return true; } break;
             case IDC_APPLY_BTN:        if (code == BN_CLICKED) { on_apply();             return true; } break;
             case IDC_CANCEL_BTN:       if (code == BN_CLICKED) { on_close();             return true; } break;
             case IDC_OPEN_CONFIG_BTN:  if (code == BN_CLICKED) { UIBridge::open_config_file(); return true; } break;
@@ -318,6 +320,7 @@ private:
     // tree (each unique_ptr's destructor destroys its HWND).
     void rebuild_layout() {
         controls_.clear();   // every owned HWND; old vectors are gone
+        rename_index_ = -1;  // listbox indices are fresh after a rebuild
 
         int x  = px(kLeftMargin);
         int y  = px(kTopMargin);
@@ -519,6 +522,70 @@ private:
                                     WS_BORDER};
         (void)proc_list_.inject_theme(&palette_, &fonts_);
         (void)proc_list_.create(p);
+        // Install a drag-reorder subclass on the configured-process listbox.
+        // Composes with NFUI's own subclass (paint); DefSubclassProc chains on.
+        SetWindowSubclass(proc_list_.hwnd(), &SettingsWindow::list_subclass_proc,
+                          1, reinterpret_cast<DWORD_PTR>(this));
+    }
+
+    // Drag-reorder subclass for IDC_PROC_LIST. Records the anchor item on
+    // LBUTTONDOWN, starts reordering after a 4px move threshold, and
+    // delete+inserts the anchor at the hovered target on WM_MOUSEMOVE. The
+    // new order is read back into cfg_.process_names on Apply.
+    static LRESULT CALLBACK list_subclass_proc(HWND h, UINT msg, WPARAM w,
+                                               LPARAM l, UINT_PTR /*id*/,
+                                               DWORD_PTR ref) {
+        auto* self = reinterpret_cast<SettingsWindow*>(ref);
+        switch (msg) {
+            case WM_LBUTTONDOWN: {
+                POINT pt{static_cast<short>(LOWORD(l)),
+                          static_cast<short>(HIWORD(l))};
+                DWORD hit = static_cast<DWORD>(SendMessageW(
+                    h, LB_ITEMFROMPOINT, 0, MAKELPARAM(pt.x, pt.y)));
+                if (HIWORD(hit) == 0) {
+                    self->drag_anchor_index_ = static_cast<int>(LOWORD(hit));
+                    self->dragging_ = false;
+                    POINT s = pt; ClientToScreen(h, &s);
+                    self->drag_start_pt_ = s;
+                } else {
+                    self->drag_anchor_index_ = -1;
+                }
+                break;  // fall through to default so selection still updates
+            }
+            case WM_MOUSEMOVE: {
+                if (self->drag_anchor_index_ < 0 || !(w & MK_LBUTTON)) break;
+                POINT pt{static_cast<short>(LOWORD(l)),
+                          static_cast<short>(HIWORD(l))};
+                POINT s = pt; ClientToScreen(h, &s);
+                if (!self->dragging_) {
+                    int dx = s.x - self->drag_start_pt_.x;
+                    int dy = s.y - self->drag_start_pt_.y;
+                    if (dx * dx + dy * dy < 16) break;   // <4px threshold
+                    self->dragging_ = true;
+                }
+                DWORD hit = static_cast<DWORD>(SendMessageW(
+                    h, LB_ITEMFROMPOINT, 0, MAKELPARAM(pt.x, pt.y)));
+                if (HIWORD(hit) != 0) break;             // outside client
+                int target = static_cast<int>(LOWORD(hit));
+                if (target == self->drag_anchor_index_ || target < 0) break;
+                wchar_t buf[MAX_PATH]{};
+                SendMessageW(h, LB_GETTEXT, self->drag_anchor_index_,
+                             reinterpret_cast<LPARAM>(buf));
+                SendMessageW(h, LB_DELETESTRING, self->drag_anchor_index_, 0);
+                SendMessageW(h, LB_INSERTSTRING, target,
+                             reinterpret_cast<LPARAM>(buf));
+                SendMessageW(h, LB_SETCURSEL, target, 0);
+                self->drag_anchor_index_ = target;
+                break;
+            }
+            case WM_LBUTTONUP:
+            case WM_CAPTURECHANGED:
+            case WM_RBUTTONDOWN:
+                self->drag_anchor_index_ = -1;
+                self->dragging_ = false;
+                break;
+        }
+        return DefSubclassProc(h, msg, w, l);
     }
 
     nfui::Button& button_for(int id) {
@@ -634,6 +701,34 @@ private:
         HWND edit = GetDlgItem(hwnd(), IDC_PROC_NAME_EDIT);
         if (!get_edit_text(edit, txt)) return;
         std::wstring name = trim_ws(txt);
+
+        // Rename mode: the Add button is relabeled "Rename" while a listbox
+        // entry is being edited. Commit replaces that entry in place; an
+        // empty name or Esc cancels.
+        if (rename_index_ >= 0) {
+            HWND lb = GetDlgItem(hwnd(), IDC_PROC_LIST);
+            if (!name.empty()) {
+                int n = static_cast<int>(SendMessageW(lb, LB_GETCOUNT, 0, 0));
+                for (int i = 0; i < n; ++i) {
+                    if (i == rename_index_) continue;
+                    wchar_t buf[MAX_PATH]{};
+                    SendMessageW(lb, LB_GETTEXT, i, reinterpret_cast<LPARAM>(buf));
+                    if (name == buf) {
+                        AT_LOG_DEBUG("Rename rejected, name in use: %ls",
+                                     name.c_str());
+                        cancel_rename_mode();
+                        return;
+                    }
+                }
+                SendMessageW(lb, LB_DELETESTRING, rename_index_, 0);
+                SendMessageW(lb, LB_INSERTSTRING, rename_index_,
+                             reinterpret_cast<LPARAM>(name.c_str()));
+                SendMessageW(lb, LB_SETCURSEL, rename_index_, 0);
+            }
+            cancel_rename_mode();
+            return;
+        }
+
         if (name.empty()) return;
         add_to_configured_list(name);
         SetWindowTextW(edit, L"");
@@ -652,6 +747,7 @@ private:
     }
 
     void on_remove_selected() {
+        cancel_rename_mode();   // a stale rename index must not survive a delete
         HWND lb = GetDlgItem(hwnd(), IDC_PROC_LIST);
         int sel = static_cast<int>(SendMessageW(lb, LB_GETCURSEL, 0, 0));
         if (sel < 0) return;
@@ -663,6 +759,31 @@ private:
         }
         int new_sel = sel < n ? sel : n - 1;
         SendMessageW(lb, LB_SETCURSEL, new_sel, 0);
+    }
+
+    // Double-click a configured entry to rename it: load the name into the
+    // Row A edit, relabel the Add button to "Rename", and select-all so a
+    // new name can be typed over. Commit via the (Rename) button; Esc cancels.
+    void on_rename_selected() {
+        HWND lb = GetDlgItem(hwnd(), IDC_PROC_LIST);
+        int sel = static_cast<int>(SendMessageW(lb, LB_GETCURSEL, 0, 0));
+        if (sel < 0) return;
+        wchar_t buf[MAX_PATH]{};
+        SendMessageW(lb, LB_GETTEXT, sel, reinterpret_cast<LPARAM>(buf));
+        rename_index_ = sel;
+        HWND edit = GetDlgItem(hwnd(), IDC_PROC_NAME_EDIT);
+        SetWindowTextW(edit, buf);
+        SendMessageW(edit, EM_SETSEL, 0, -1);
+        SetFocus(edit);
+        SetWindowTextW(GetDlgItem(hwnd(), IDC_PROC_NAME_ADD), L"Rename");
+    }
+
+    // Exit rename mode: relabel the button back to "Add" and clear the edit.
+    void cancel_rename_mode() {
+        if (rename_index_ < 0) return;
+        rename_index_ = -1;
+        SetWindowTextW(GetDlgItem(hwnd(), IDC_PROC_NAME_ADD), L"&Add");
+        SetWindowTextW(GetDlgItem(hwnd(), IDC_PROC_NAME_EDIT), L"");
     }
 
     void add_to_configured_list(const std::wstring& name) {
@@ -707,16 +828,23 @@ private:
     }
 
     LRESULT on_keydown(WPARAM vk) {
-        if (cap_ == CapNone) return 1;
-        if (vk == VK_ESCAPE) { cancel_capture(); return 0; }
-        if (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT ||
-            vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL ||
-            vk == VK_MENU  || vk == VK_LMENU  || vk == VK_RMENU ||
-            vk == VK_LWIN  || vk == VK_RWIN) {
+        if (cap_ != CapNone) {
+            if (vk == VK_ESCAPE) { cancel_capture(); return 0; }
+            if (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT ||
+                vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL ||
+                vk == VK_MENU  || vk == VK_LMENU  || vk == VK_RMENU ||
+                vk == VK_LWIN  || vk == VK_RWIN) {
+                return 0;
+            }
+            finish_capture(static_cast<UINT>(vk));
             return 0;
         }
-        finish_capture(static_cast<UINT>(vk));
-        return 0;
+        // Esc cancels an in-progress rename (button reverts to "Add").
+        if (rename_index_ >= 0 && vk == VK_ESCAPE) {
+            cancel_rename_mode();
+            return 0;
+        }
+        return 1;
     }
 
     void finish_capture(UINT vk) {
@@ -737,6 +865,7 @@ private:
     }
 
     void on_apply() {
+        cancel_rename_mode();   // discard any uncommitted rename before reading
         cfg_.process_names.clear();
         HWND lb = GetDlgItem(hwnd(), IDC_PROC_LIST);
         int n = static_cast<int>(SendMessageW(lb, LB_GETCOUNT, 0, 0));
@@ -780,6 +909,7 @@ private:
 
     void on_close() {
         cancel_capture();
+        cancel_rename_mode();
         ShowWindow(hwnd(), SW_HIDE);
         if (cbs_.on_close) cbs_.on_close();
     }
@@ -868,6 +998,10 @@ private:
     std::optional<Hotkey> pending_tile_;
     std::optional<Hotkey> pending_pause_;
     std::vector<std::wstring> running_proc_cache_;   // last Toolhelp32 snapshot
+    int  rename_index_ = -1;        // listbox index being renamed (-1 = add mode)
+    int  drag_anchor_index_ = -1;   // drag-reorder anchor item, -1 = none
+    bool dragging_ = false;         // true once the drag passed the 4px threshold
+    POINT drag_start_pt_{};         // LBUTTONDOWN screen point (threshold test)
 
     nfui::ThemePalette palette_{};
     nfui::FontCache    fonts_{};
