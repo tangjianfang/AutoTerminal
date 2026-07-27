@@ -30,13 +30,46 @@ TEST(ProcessLister, EnumerateExcludesSelf) {
         << "self (" << self << ") should be filtered out";
 }
 
-TEST(ProcessLister, EnumerateIsSortedAndDeduped) {
+TEST(ProcessLister, EnumerateIsDeduped) {
+    // The picker is now ordered by frequency (most instances first), not
+    // strictly alphabetical, so we only assert dedup + non-empty here. The
+    // ordering itself is covered deterministically by RankByFrequency_*.
     auto names = enumerate_running_process_names();
     ASSERT_FALSE(names.empty());
     for (size_t i = 1; i < names.size(); ++i) {
-        EXPECT_LT(names[i - 1], names[i]) << "not sorted at index " << i;
         EXPECT_NE(names[i - 1], names[i]) << "duplicate at index " << i;
     }
+}
+
+TEST(ProcessLister, RankByFrequencyOrdersByCountThenName) {
+    std::vector<std::wstring> in = {L"b", L"a", L"b", L"a", L"a", L"c"};
+    auto out = rank_by_frequency(in);
+    ASSERT_EQ(out.size(), 3u);
+    EXPECT_EQ(out[0], L"a");   // 3 occurrences
+    EXPECT_EQ(out[1], L"b");   // 2
+    EXPECT_EQ(out[2], L"c");   // 1
+}
+
+TEST(ProcessLister, RankByFrequencyAlphabeticalTiebreak) {
+    std::vector<std::wstring> in = {L"wezterm.exe", L"WindowsTerminal.exe",
+                                    L"wezterm.exe", L"WindowsTerminal.exe"};
+    auto out = rank_by_frequency(in);
+    ASSERT_EQ(out.size(), 2u);
+    // Equal counts (2 each) -> alphabetical: 'W' (0x57) < 'w' (0x77).
+    EXPECT_EQ(out[0], L"WindowsTerminal.exe");
+    EXPECT_EQ(out[1], L"wezterm.exe");
+}
+
+TEST(ProcessLister, RankByFrequencyEmpty) {
+    std::vector<std::wstring> in;
+    EXPECT_TRUE(rank_by_frequency(in).empty());
+}
+
+TEST(ProcessLister, RankByFrequencySingle) {
+    std::vector<std::wstring> in = {L"svchost.exe", L"svchost.exe"};
+    auto out = rank_by_frequency(in);
+    ASSERT_EQ(out.size(), 1u);
+    EXPECT_EQ(out[0], L"svchost.exe");
 }
 
 TEST(ProcessLister, EnumerateNamesAreNonEmpty) {

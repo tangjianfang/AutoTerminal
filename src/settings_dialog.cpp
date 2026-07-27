@@ -39,7 +39,7 @@ constexpr wchar_t kTitle[] = L"AutoTerminal Settings";
 // DpiScale::logical_to_pixels at build time so the dialog stays aligned at any
 // DPI. Heights here are at 100 % DPI; bump kDefaultHeightPx if you add rows.
 constexpr int kDefaultWidthPx  = 580;
-constexpr int kDefaultHeightPx = 470;   // +1 row: "Config file" Export/Import
+constexpr int kDefaultHeightPx = 500;   // +2 rows: Config file + Filter running
 constexpr int kRowH            = 24;
 constexpr int kGap             = 6;
 constexpr int kGapTight        = 4;
@@ -94,6 +94,9 @@ enum CtrlId {
     IDC_CFGFILE_LABEL,           // "Config file" row label
     IDC_EXPORT_CONFIG_BTN,       // export config.toml to a chosen path
     IDC_IMPORT_CONFIG_BTN,       // load a chosen config.toml into the dialog
+
+    IDC_PROC_FILTER_LABEL,       // "Filter running" label
+    IDC_PROC_FILTER_EDIT,        // live-filter the running-process picker
 };
 
 enum CaptureState { CapNone, CapTile, CapPause };
@@ -126,6 +129,22 @@ std::wstring trim_ws(const std::wstring& s) {
     while (a < b && (s[a] == L' ' || s[a] == L'\t')) ++a;
     while (b > a && (s[b - 1] == L' ' || s[b - 1] == L'\t')) --b;
     return s.substr(a, b - a);
+}
+
+// ASCII-only lowercase (A-Z -> a-z). Process basenames are ASCII filenames,
+// so this avoids towlower's locale surprises (e.g. Turkish dotless i).
+std::wstring ascii_lower(std::wstring s) {
+    for (auto& c : s) {
+        if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
+    }
+    return s;
+}
+
+// Case-insensitive substring test for the process-name filter. An empty
+// needle matches everything.
+bool contains_ci(const std::wstring& haystack, const std::wstring& needle) {
+    if (needle.empty()) return true;
+    return ascii_lower(haystack).find(ascii_lower(needle)) != std::wstring::npos;
 }
 
 bool listbox_contains(HWND lb, const std::wstring& s) {
@@ -265,6 +284,7 @@ protected:
             case IDC_HK_PAUSE_CAPTURE: if (code == BN_CLICKED) { start_capture(CapPause); return true; } break;
             case IDC_PROC_NAME_ADD:    if (code == BN_CLICKED) { on_add_named();         return true; } break;
             case IDC_PROC_PICK_REFRESH:if (code == BN_CLICKED) { refresh_running_processes(); return true; } break;
+            case IDC_PROC_FILTER_EDIT: if (code == EN_CHANGE)  { refilter_running_processes(); return true; } break;
             case IDC_PROC_PICK_ADD:    if (code == BN_CLICKED) { on_add_picked();        return true; } break;
             case IDC_PROC_REMOVE:      if (code == BN_CLICKED) { on_remove_selected();   return true; } break;
             case IDC_APPLY_BTN:        if (code == BN_CLICKED) { on_apply();             return true; } break;
@@ -320,6 +340,13 @@ private:
                  px(kRowH), IDC_PROC_NAME_EDIT);
         add_button(x + label_w + px(kGapTight + 2) + field_w - px(kAddBtnW), y,
                    px(kAddBtnW), px(kRowH), L"&Add", IDC_PROC_NAME_ADD);
+        y += px(kRowH) + px(kGapTight);
+
+        // Row A.5: filter the running-process picker (live substring filter)
+        add_label(x, y, label_w, px(kRowH), L"&Filter running",
+                  IDC_PROC_FILTER_LABEL);
+        add_edit(x + label_w + px(kGapTight + 2), y, field_w, px(kRowH),
+                 IDC_PROC_FILTER_EDIT);
         y += px(kRowH) + px(kGapTight);
 
         // Row B: pick from running processes
@@ -408,6 +435,7 @@ private:
         apply_check_state();
         refresh_hotkey_labels();
         populate_configured_list();
+        refilter_running_processes();   // refill picker from cached snapshot
     }
 
     // -------- control builders ----------------------------------------
@@ -558,19 +586,37 @@ private:
         SendMessageW(combo, CB_SETCURSEL, sel, 0);
     }
 
+    // Snapshot the running processes and refill the picker (applying the
+    // current filter text). Called on first show, on Refresh, and after a
+    // config import.
     void refresh_running_processes() {
+        running_proc_cache_ = enumerate_running_process_names();
+        refilter_running_processes();
+        AT_LOG_DEBUG("Refreshed running-process picker: %zu entries",
+                     running_proc_cache_.size());
+    }
+
+    // Rebuild the picker combo from the cached snapshot, keeping only names
+    // that contain the current filter text (case-insensitive substring).
+    // Called on every EN_CHANGE of the filter edit and at the tail of
+    // rebuild_layout, so a DPI change restores the list without a fresh
+    // Toolhelp32 snapshot.
+    void refilter_running_processes() {
         HWND combo = GetDlgItem(hwnd(), IDC_PROC_PICK_COMBO);
         if (!combo) return;
+        std::wstring filter;
+        HWND fed = GetDlgItem(hwnd(), IDC_PROC_FILTER_EDIT);
+        if (fed) get_edit_text(fed, filter);
+        filter = trim_ws(filter);
         SendMessageW(combo, CB_RESETCONTENT, 0, 0);
-        auto names = enumerate_running_process_names();
-        for (const auto& n : names) {
+        for (const auto& n : running_proc_cache_) {
+            if (!contains_ci(n, filter)) continue;
             SendMessageW(combo, CB_ADDSTRING, 0,
                          reinterpret_cast<LPARAM>(n.c_str()));
         }
         if (SendMessageW(combo, CB_GETCOUNT, 0, 0) > 0) {
             SendMessageW(combo, CB_SETCURSEL, 0, 0);
         }
-        AT_LOG_DEBUG("Refreshed running-process picker: %zu entries", names.size());
     }
 
     void populate_configured_list() {
@@ -821,6 +867,7 @@ private:
     CaptureState cap_{CapNone};
     std::optional<Hotkey> pending_tile_;
     std::optional<Hotkey> pending_pause_;
+    std::vector<std::wstring> running_proc_cache_;   // last Toolhelp32 snapshot
 
     nfui::ThemePalette palette_{};
     nfui::FontCache    fonts_{};

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace autoterminal {
@@ -20,6 +21,22 @@ std::wstring self_basename() noexcept {
 }
 
 } // namespace
+
+std::vector<std::wstring> rank_by_frequency(std::vector<std::wstring> names) {
+    std::unordered_map<std::wstring, int> counts;
+    for (const auto& n : names) counts[n]++;
+    std::vector<std::wstring> uniq;
+    uniq.reserve(counts.size());
+    for (const auto& kv : counts) uniq.push_back(kv.first);
+    std::sort(uniq.begin(), uniq.end(),
+        [&](const std::wstring& a, const std::wstring& b) {
+            const int ca = counts[a];
+            const int cb = counts[b];
+            if (ca != cb) return ca > cb;   // occurrence count descending
+            return a < b;                    // alphabetical tiebreak
+        });
+    return uniq;
+}
 
 std::vector<std::wstring> enumerate_running_process_names() noexcept {
     std::vector<std::wstring> names;
@@ -43,11 +60,10 @@ std::vector<std::wstring> enumerate_running_process_names() noexcept {
     }
     CloseHandle(snap);
 
-    // Deduplicate (multiple processes can share an image name — e.g. several
-    // msbuild.exe workers) and sort so the picker's dropdown is stable.
-    std::sort(names.begin(), names.end());
-    names.erase(std::unique(names.begin(), names.end()), names.end());
-    return names;
+    // Deduplicate and order by frequency so the picker's dropdown leads with
+    // the processes the user most likely wants (e.g. the terminal host that
+    // has N windows open), not an alphabetical dump.
+    return rank_by_frequency(std::move(names));
 }
 
 } // namespace autoterminal
