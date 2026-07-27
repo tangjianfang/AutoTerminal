@@ -13,9 +13,9 @@ namespace autoterminal {
 
 namespace {
 
-constexpr UINT kHotkeyIdTile    = 1;
-constexpr UINT kHotkeyIdPause   = 2;
-constexpr UINT kHotkeyIdSettings = 3;
+constexpr UINT kHotkeyIdTile         = 1;
+constexpr UINT kHotkeyIdPause        = 2;
+constexpr UINT kHotkeyIdTileSpecific = 3;
 
 constexpr LPCWSTR kAutostartKey   = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr LPCWSTR kAutostartName = L"AutoTerminal";
@@ -256,12 +256,27 @@ void UIBridge::register_hotkeys() {
         AT_LOG_WARN("Failed to register hotkey pause (mods=0x%X vk=0x%X) - is it already in use?",
                     current_config_.hotkey_toggle_pause.modifiers, current_config_.hotkey_toggle_pause.vk);
     }
+    if (current_config_.hotkey_tile_specific.vk != 0) {
+        if (RegisterHotKey(hwnd_, kHotkeyIdTileSpecific,
+                           current_config_.hotkey_tile_specific.modifiers,
+                           current_config_.hotkey_tile_specific.vk)) {
+            std::wstring wide = format_hotkey(current_config_.hotkey_tile_specific);
+            std::string label(wide.size(), '\0');
+            for (size_t i = 0; i < wide.size(); ++i) label[i] = static_cast<char>(wide[i] & 0x7F);
+            AT_LOG_INFO("Registered hotkey tile-specific: %s", label.c_str());
+        } else {
+            AT_LOG_WARN("Failed to register hotkey tile-specific (mods=0x%X vk=0x%X) - in use?",
+                        current_config_.hotkey_tile_specific.modifiers,
+                        current_config_.hotkey_tile_specific.vk);
+        }
+    }
 }
 
 void UIBridge::unregister_hotkeys() {
     if (!hwnd_) return;
     UnregisterHotKey(hwnd_, kHotkeyIdTile);
     UnregisterHotKey(hwnd_, kHotkeyIdPause);
+    UnregisterHotKey(hwnd_, kHotkeyIdTileSpecific);
 }
 
 void UIBridge::apply_config(const Config& cfg) {

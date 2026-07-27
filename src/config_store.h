@@ -21,6 +21,7 @@ struct Config {
     std::wstring target_monitor;          // friendly name or GDI name; empty = primary
     Hotkey hotkey_tile       {MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'T'};
     Hotkey hotkey_toggle_pause{MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, 'T'};
+    Hotkey hotkey_tile_specific;   // tiles only the first configured process; disabled until set (vk=0)
     bool autostart = false;
     int autostart_delay = 0;   // seconds to suppress auto-tile after an autostart launch (0 = off)
     LogLevel log_level = LogLevel::Info;

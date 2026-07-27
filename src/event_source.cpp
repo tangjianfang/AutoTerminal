@@ -101,6 +101,7 @@ void EventSource::handle_hotkey(int id) {
     switch (id) {
         case 1: cmd_cb_(Command::TileNow);    break;
         case 2: cmd_cb_(Command::TogglePause);break;
+        case 3: cmd_cb_(Command::TileSpecific);break;
         default: break;
     }
 }

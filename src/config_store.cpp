@@ -112,6 +112,9 @@ std::optional<Config> load_config(const fs::path& path) {
         if (const toml::node* v = t->get("toggle_pause"); v && v->is_string()) {
             if (auto hk = parse_hotkey(widen(v->value_or(std::string{})))) cfg.hotkey_toggle_pause = *hk;
         }
+        if (const toml::node* v = t->get("tile_specific"); v && v->is_string()) {
+            if (auto hk = parse_hotkey(widen(v->value_or(std::string{})))) cfg.hotkey_tile_specific = *hk;
+        }
     }
 
     if (const toml::table* t = as_table(res.get("ui")); t) {
@@ -150,6 +153,9 @@ void save_config(const fs::path& path, const Config& cfg) {
         toml::table hotkeys;
         hotkeys.insert("tile_now",     narrow(format_hotkey(cfg.hotkey_tile)));
         hotkeys.insert("toggle_pause", narrow(format_hotkey(cfg.hotkey_toggle_pause)));
+        if (cfg.hotkey_tile_specific.vk != 0) {
+            hotkeys.insert("tile_specific", narrow(format_hotkey(cfg.hotkey_tile_specific)));
+        }
         root.insert("hotkeys", std::move(hotkeys));
     }
     {

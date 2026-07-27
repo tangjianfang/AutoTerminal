@@ -112,6 +112,29 @@ TEST(ConfigStore, AutostartDelayClampsNegative) {
     EXPECT_EQ(loaded->autostart_delay, 0);
 }
 
+TEST(ConfigStore, TileSpecificHotkeyRoundTrip) {
+    auto file_path = tmp_file("tilespec.toml");
+    Config cfg;
+    cfg.hotkey_tile_specific = Hotkey{MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
+                                      static_cast<UINT>('Y')};
+    save_config(file_path, cfg);
+    auto loaded = load_config(file_path);
+    ASSERT_TRUE(loaded.has_value());
+    EXPECT_EQ(loaded->hotkey_tile_specific.vk, static_cast<UINT>('Y'));
+    EXPECT_NE(loaded->hotkey_tile_specific.modifiers & MOD_SHIFT, 0u);
+}
+
+TEST(ConfigStore, TileSpecificHotkeyDisabledByDefault) {
+    auto file_path = tmp_file("tilespec_default.toml");
+    Config cfg;  // hotkey_tile_specific defaults to {0, 0} — disabled
+    save_config(file_path, cfg);
+    // save_config must omit tile_specific when vk == 0; reload keeps the default.
+    auto loaded = load_config(file_path);
+    ASSERT_TRUE(loaded.has_value());
+    EXPECT_EQ(loaded->hotkey_tile_specific.vk, 0u);
+    EXPECT_EQ(loaded->hotkey_tile_specific.modifiers, 0u);
+}
+
 TEST(ConfigStore, HotkeyParseBasic) {
     auto hk = parse_hotkey(L"Ctrl+Alt+T");
     ASSERT_TRUE(hk.has_value());

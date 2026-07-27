@@ -44,8 +44,9 @@ bool has_flag(LPCWSTR cmdline, LPCWSTR flag) {
     return false;
 }
 
-bool perform_tile() {
-    std::lock_guard<std::mutex> lock(g_state_mutex);
+// Tile windows matching `only` into a grid on the target monitor. Assumes
+// g_state_mutex is already held by the caller.
+bool perform_tile_locked(const std::vector<std::wstring>& only) {
     auto monitors = autoterminal::enumerate_monitors();
     const auto* target = autoterminal::resolve_monitor(monitors, g_config.target_monitor);
     if (!target) {
@@ -57,7 +58,7 @@ bool perform_tile() {
         AT_LOG_WARN("No monitors at all — nothing to tile");
         return false;
     }
-    auto windows = autoterminal::collect_terminal_windows(g_config.process_names);
+    auto windows = autoterminal::collect_terminal_windows(only);
     if (windows.empty()) {
         AT_LOG_DEBUG("No terminal windows match configured process names");
         return false;
@@ -70,6 +71,19 @@ bool perform_tile() {
                 placed, windows.size(), layout.rows, layout.cols,
                 autoterminal::monitor_log_label(target->friendly_name).c_str());
     return placed > 0;
+}
+
+bool perform_tile() {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    return perform_tile_locked(g_config.process_names);
+}
+
+// Tile only the windows of a restricted process set (e.g. the Tile-specific
+// hotkey), leaving every other window where it is. `only` is snapshotted by
+// value and matched case-insensitively by collect_terminal_windows.
+bool perform_tile_filtered(const std::vector<std::wstring>& only) {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    return perform_tile_locked(only);
 }
 
 void on_command(autoterminal::EventSource::Command cmd) {
@@ -95,6 +109,18 @@ void on_command(autoterminal::EventSource::Command cmd) {
         case autoterminal::EventSource::Command::Exit:
             if (g_events) g_events->request_exit();
             break;
+        case autoterminal::EventSource::Command::TileSpecific: {
+            // Tile only the first configured process — the user can drag-reorder
+            // the list (Settings) to pick which one this hotkey targets. All
+            // other windows are left untouched.
+            std::lock_guard<std::mutex> lock(g_state_mutex);
+            if (!g_config.process_names.empty()) {
+                AT_LOG_INFO("Tile-specific: tiling only '%ls'",
+                            g_config.process_names[0].c_str());
+                perform_tile_locked({g_config.process_names[0]});
+            }
+            break;
+        }
     }
 }
 

@@ -26,7 +26,7 @@ public:
     EventSource(const EventSource&) = delete;
     EventSource& operator=(const EventSource&) = delete;
 
-    enum class Command { TileNow, TogglePause, Reload, Exit };
+    enum class Command { TileNow, TogglePause, Reload, Exit, TileSpecific };
 
     using TileCallback    = std::function<void()>;
     using ReloadCallback  = std::function<void()>;
