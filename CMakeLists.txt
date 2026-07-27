@@ -10,19 +10,34 @@ if(MSVC)
     add_compile_definitions(
         WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
         _CRT_SECURE_NO_WARNINGS TOML_EXCEPTIONS=1)
+    # Static-link the MSVC runtime so AutoTerminal.exe does not require the
+    # Visual C++ Redistributable on the target machine. /MT adds ~600 KB
+    # but pays for itself by removing a deployment prerequisite. Both
+    # autoterminal_core and the AutoTerminal executable opt in.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
 # ---- third-party ----------------------------------------------------------
 include(FetchContent)
 set(FETCHCONTENT_QUIET OFF)
 
-# toml++ for config.toml parsing
-FetchContent_Declare(
-    tomlplusplus
-    GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
-    GIT_TAG        v3.4.0
-    GIT_SHALLOW    TRUE
-)
+# toml++ for config.toml parsing.
+#
+# Default to a network clone, but allow a developer to fall back to a
+# pre-staged source tree when the build host can't reach github.com
+# (e.g. behind a captive portal). Set the cache var to point at a
+# unpacked tomlplusplus v3.4.0 source root and re-run configure.
+if(DEFINED FETCHCONTENT_SOURCE_DIR_TOMLPLUSPLUS)
+    message(STATUS "tomlplusplus: using FETCHCONTENT_SOURCE_DIR_TOMLPLUSPLUS=${FETCHCONTENT_SOURCE_DIR_TOMLPLUSPLUS}")
+    FetchContent_Declare(tomlplusplus SOURCE_DIR "${FETCHCONTENT_SOURCE_DIR_TOMLPLUSPLUS}")
+else()
+    FetchContent_Declare(
+        tomlplusplus
+        GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
+        GIT_TAG        v3.4.0
+        GIT_SHALLOW    TRUE
+    )
+endif()
 FetchContent_MakeAvailable(tomlplusplus)
 
 # NativeFrameUI for themed, DPI-aware controls (Button / CheckBox / StaticText /
@@ -38,12 +53,17 @@ FetchContent_MakeAvailable(NativeFrameUI)
 option(AUTOTERMINAL_BUILD_TESTS "Build unit tests" ON)
 if(AUTOTERMINAL_BUILD_TESTS)
     enable_testing()
-    FetchContent_Declare(
-        googletest
-        GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG        v1.15.2
-        GIT_SHALLOW    TRUE
-    )
+    if(DEFINED FETCHCONTENT_SOURCE_DIR_GOOGLETEST)
+        message(STATUS "googletest: using FETCHCONTENT_SOURCE_DIR_GOOGLETEST=${FETCHCONTENT_SOURCE_DIR_GOOGLETEST}")
+        FetchContent_Declare(googletest SOURCE_DIR "${FETCHCONTENT_SOURCE_DIR_GOOGLETEST}")
+    else()
+        FetchContent_Declare(
+            googletest
+            GIT_REPOSITORY https://github.com/google/googletest.git
+            GIT_TAG        v1.15.2
+            GIT_SHALLOW    TRUE
+        )
+    endif()
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(googletest)
 endif()
@@ -83,7 +103,13 @@ endif()
 # ---- main executable ------------------------------------------------------
 # Embed the PerMonitorV2-aware application manifest so NativeFrameUI's
 # DpiScale / dpi_of() helpers get reliable per-monitor DPI on multi-DPI setups.
-add_executable(AutoTerminal WIN32 src/main.cpp src/app.manifest)
+# The .rc compiles into a .res via rc.exe; CMake links it into the executable
+# so the taskbar / ALT-TAB / Explorer thumbnail all share app.ico.
+add_executable(AutoTerminal WIN32
+    src/main.cpp
+    src/app.manifest
+    src/app.rc
+)
 target_link_libraries(AutoTerminal PRIVATE autoterminal_core)
 
 # ---- tests ----------------------------------------------------------------

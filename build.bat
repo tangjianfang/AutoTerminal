@@ -25,7 +25,7 @@ if not defined NINJA_EXE (
     exit /b 1
 )
 
-cmake -S . -B build -G Ninja -DCMAKE_MAKE_PROGRAM="%NINJA_EXE%" -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -G Ninja -DCMAKE_MAKE_PROGRAM="%NINJA_EXE%" -DCMAKE_BUILD_TYPE=Release %AUTOTERMINAL_CMAKE_EXTRA%
 if errorlevel 1 exit /b 1
 
 cmake --build build
