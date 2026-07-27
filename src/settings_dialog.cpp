@@ -2,6 +2,7 @@
 
 #include "logger.h"
 #include "monitor_index.h"
+#include "process_lister.h"
 #include "ui_bridge.h"
 
 #include <nfui/Application.hpp>
@@ -10,6 +11,7 @@
 #include <nfui/Controls/CheckBox.hpp>
 #include <nfui/Controls/ComboBox.hpp>
 #include <nfui/Controls/Edit.hpp>
+#include <nfui/Controls/ListBox.hpp>
 #include <nfui/Controls/StaticText.hpp>
 #include <nfui/Font.hpp>
 #include <nfui/Theme.hpp>
@@ -26,14 +28,43 @@ namespace autoterminal {
 
 namespace {
 
-constexpr wchar_t kClass[]        = L"AutoTerminal.SettingsWindow.v1";
-constexpr wchar_t kTitle[]        = L"AutoTerminal Settings";
+constexpr wchar_t kClass[] = L"AutoTerminal.SettingsWindow.v1";
+constexpr wchar_t kTitle[] = L"AutoTerminal Settings";
+
+// Logical-pixel layout grid (100 % DPI baseline). All coordinates flow through
+// DpiScale::logical_to_pixels at build time so the dialog stays aligned at any
+// DPI. Heights here are at 100 % DPI; bump kDefaultHeightPx if you add rows.
+constexpr int kDefaultWidthPx  = 560;
+constexpr int kDefaultHeightPx = 380;
+constexpr int kRowH            = 24;
+constexpr int kGap             = 6;
+constexpr int kGapTight        = 4;
+constexpr int kGapBeforeButton = 8;
+constexpr int kLeftMargin      = 14;
+constexpr int kTopMargin       = 12;
+constexpr int kLabelW          = 168;
+constexpr int kFieldW          = 360;
+constexpr int kPaddingFieldW   = 80;
+constexpr int kLogLevelComboW  = 160;
+constexpr int kCaptureBtnW     = 96;
+constexpr int kAddBtnW         = 90;
+constexpr int kBtnGap          = 8;
+constexpr int kProcListH       = 72;
+constexpr int kComboDropHeight = 220;
 
 enum CtrlId {
-    IDC_MONITOR_LABEL    = 1001,
+    IDC_MONITOR_LABEL = 1001,
     IDC_MONITOR_COMBO,
-    IDC_PROCESS_LABEL,
-    IDC_PROCESS_EDIT,
+
+    IDC_PROCESS_LABEL,            // column label "Processes"
+    IDC_PROC_NAME_EDIT,           // row A: free-text input
+    IDC_PROC_NAME_ADD,            // row A: Add
+    IDC_PROC_PICK_COMBO,          // row B: running-process picker
+    IDC_PROC_PICK_REFRESH,        // row B: refresh running-process list
+    IDC_PROC_PICK_ADD,            // row B: add picked
+    IDC_PROC_LIST,                // row C: configured processes listbox
+    IDC_PROC_REMOVE,              // row C: remove selected from listbox
+
     IDC_PADDING_LABEL,
     IDC_PADDING_EDIT,
     IDC_HK_TILE_LABEL,
@@ -52,34 +83,6 @@ enum CtrlId {
 };
 
 enum CaptureState { CapNone, CapTile, CapPause };
-
-// --------------- small free-function helpers (unchanged) -------------------
-
-std::vector<std::wstring> split_csv(const std::wstring& s) {
-    std::vector<std::wstring> out;
-    size_t i = 0;
-    while (i < s.size()) {
-        while (i < s.size() && (s[i] == L' ' || s[i] == L',' || s[i] == L'\t')) ++i;
-        size_t start = i;
-        while (i < s.size() && s[i] != L',') ++i;
-        if (i > start) {
-            std::wstring t = s.substr(start, i - start);
-            while (!t.empty() && t.back() == L' ') t.pop_back();
-            if (!t.empty()) out.push_back(std::move(t));
-        }
-    }
-    if (out.empty()) out.push_back(L"WindowsTerminal.exe");
-    return out;
-}
-
-std::wstring join_csv(const std::vector<std::wstring>& v) {
-    std::wstring s;
-    for (size_t i = 0; i < v.size(); ++i) {
-        if (i) s += L", ";
-        s += v[i];
-    }
-    return s;
-}
 
 void set_edit_int(HWND edit, int value) {
     wchar_t buf[32];
@@ -104,18 +107,33 @@ bool get_edit_text(HWND edit, std::wstring& out) {
     return true;
 }
 
+std::wstring trim_ws(const std::wstring& s) {
+    size_t a = 0, b = s.size();
+    while (a < b && (s[a] == L' ' || s[a] == L'\t')) ++a;
+    while (b > a && (s[b - 1] == L' ' || s[b - 1] == L'\t')) --b;
+    return s.substr(a, b - a);
+}
+
+bool listbox_contains(HWND lb, const std::wstring& s) {
+    int n = static_cast<int>(SendMessageW(lb, LB_GETCOUNT, 0, 0));
+    for (int i = 0; i < n; ++i) {
+        wchar_t buf[256]{};
+        SendMessageW(lb, LB_GETTEXT, i, reinterpret_cast<LPARAM>(buf));
+        if (s == buf) return true;
+    }
+    return false;
+}
+
 // --------------- the NFUI-backed window subclass --------------------------
 
 class SettingsWindow final : public nfui::Window {
 public:
     SettingsWindow(HINSTANCE inst, Config initial, SettingsCallbacks cbs)
         : inst_(inst), cfg_(std::move(initial)), cbs_(std::move(cbs)),
-          palette_(nfui::theme_palette(nfui::resolve_theme_mode(nfui::ThemeMode::system))) {}
+          palette_(nfui::theme_palette(nfui::resolve_theme_mode(nfui::ThemeMode::system))),
+          s_(96) {}
 
     ~SettingsWindow() override {
-        // Owned GDI handle. The caller currently leaks the SettingsWindow
-        // object (matches AboutWindow), but DeleteObject is idempotent and
-        // protects us if a future caller does decide to `delete` the window.
         if (bg_brush_) DeleteObject(bg_brush_);
     }
 
@@ -123,107 +141,31 @@ public:
         if (!create({inst_, kClass, kTitle,
                      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
                      WS_EX_DLGMODALFRAME,
-                     CW_USEDEFAULT, CW_USEDEFAULT, 560, 380,
+                     CW_USEDEFAULT, CW_USEDEFAULT,
+                     s_.logical_to_pixels(kDefaultWidthPx),
+                     s_.logical_to_pixels(kDefaultHeightPx),
                      nullptr, nullptr})) {
             return false;
         }
 
-        dpi_ = nfui::DpiScale(nfui::dpi_of(hwnd())).dpi();   // capture at create time
-
-        // Tighter row geometry: 24-px rows with 6-px gaps reads as a normal
-        // form rather than a wide spaced-out panel. label_w is widened to
-        // fit "&Processes (comma-separated)" on one line at sm size.
-        int row_h = 24, gap = 6;
-        int x = 14, label_w = 168, field_w = 360;
-        int y = 12;
-
-        // -- Display row ------------------------------------------------
-        add_label(x, y, label_w, row_h, L"&Display", IDC_MONITOR_LABEL);
-        add_combo(x + label_w + 8, y, field_w, IDC_MONITOR_COMBO);
-        y += row_h + gap;
-
-        // -- Processes ----------------------------------------------------
-        add_label(x, y, label_w, row_h, L"&Processes (comma-separated)",
-                  IDC_PROCESS_LABEL);
-        add_edit(x + label_w + 8, y, field_w, row_h, IDC_PROCESS_EDIT);
-        y += row_h + gap;
-
-        // -- Padding ------------------------------------------------------
-        add_label(x, y, label_w, row_h, L"&Padding (px)", IDC_PADDING_LABEL);
-        add_edit(x + label_w + 8, y, 80, row_h, IDC_PADDING_EDIT);
-        y += row_h + gap;
-
-        // -- Hotkeys (display + capture) ---------------------------------
-        int cap_w = 96, disp_w = field_w - cap_w - 6;
-        add_label(x, y, label_w, row_h, L"&Tile-now hotkey", IDC_HK_TILE_LABEL);
-        add_edit(x + label_w + 8, y, disp_w, row_h, IDC_HK_TILE_DISPLAY, true);
-        add_button(x + label_w + 8 + disp_w + 6, y, cap_w, row_h,
-                   L"Captur&e", IDC_HK_TILE_CAPTURE);
-        y += row_h + gap;
-
-        add_label(x, y, label_w, row_h, L"P&ause hotkey", IDC_HK_PAUSE_LABEL);
-        add_edit(x + label_w + 8, y, disp_w, row_h, IDC_HK_PAUSE_DISPLAY, true);
-        add_button(x + label_w + 8 + disp_w + 6, y, cap_w, row_h,
-                   L"Capt&ure", IDC_HK_PAUSE_CAPTURE);
-        y += row_h + gap;
-
-        // -- Autostart ----------------------------------------------------
-        add_check(x, y, field_w + label_w, row_h,
-                  L"Start with &Windows (auto-launch at logon)",
-                  IDC_AUTOSTART_CHECK);
-        y += row_h + gap;
-
-        // -- Log level ----------------------------------------------------
-        add_label(x, y, label_w, row_h, L"&Log level", IDC_LOGLEVEL_LABEL);
-        add_combo(x + label_w + 8, y, 160, IDC_LOGLEVEL_COMBO);
-        y += row_h + gap + 8;
-
-        // -- Buttons ------------------------------------------------------
-        add_button(x, y, 150, row_h + 4, L"Open &config file...",
-                   IDC_OPEN_CONFIG_BTN);
-        int btn_w = 90, btn_gap = 8;
-        int right0 = x + label_w + 8 + field_w;
-        add_button(right0 - 2 * btn_w - btn_gap, y, btn_w, row_h + 4,
-                   L"&Apply", IDC_APPLY_BTN);
-        add_button(right0 - btn_w, y, btn_w, row_h + 4,
-                   L"Cancel", IDC_CANCEL_BTN);
-        // Exit button leftmost after Open config, prominent red-ish via
-        // secondary styling (NFUI will draw with palette.danger accent).
-        int exit_x = x + 158;
-        nfui::ButtonStyle est{};
-        est.secondary = true;
-        exit_btn_.set_style(est);
-        add_button(exit_x, y, 150, row_h + 4, L"E&xit AutoTerminal",
-                   IDC_EXIT_BTN);
-
-        // Initial state from the supplied Config.
-        populate_monitors();
-        populate_log_levels();
-        apply_text_widgets();
-        apply_check_state();
-        refresh_hotkey_labels();
+        dpi_ = nfui::dpi_of(hwnd());
+        s_   = nfui::DpiScale(dpi_);
+        rebuild_layout();
+        refresh_running_processes();
 
         ShowWindow(hwnd(), show_cmd);
         UpdateWindow(hwnd());
-        AT_LOG_INFO("Settings window created hwnd=0x%p",
-                    static_cast<void*>(hwnd()));
+        AT_LOG_INFO("Settings window created hwnd=0x%p dpi=%d",
+                    static_cast<void*>(hwnd()), dpi_);
         return true;
     }
 
 protected:
-    // -------- message handling ----------------------------------------
-
     LRESULT handle_message(UINT m, WPARAM w, LPARAM l) override {
         switch (m) {
             case WM_KEYDOWN:   return on_keydown(w);
             case WM_CLOSE:     on_close();                  return 0;
             case WM_ERASEBKGND: {
-                // NFUI Window registers with the system COLOR_WINDOW brush as
-                // its background, which in light mode is a cold beige-grey
-                // (#D4D0C8) that doesn't match NFUI's palette_.background
-                // (#FAF9F5). Painting our own background brush here keeps the
-                // dialog surface visually unified with the StaticText and
-                // ComboBox panes that sit on top of it.
                 HDC dc = reinterpret_cast<HDC>(w);
                 RECT rc{};
                 GetClientRect(hwnd(), &rc);
@@ -231,19 +173,12 @@ protected:
                 return 1;
             }
             case WM_CTLCOLORSTATIC: {
-                // NFUI StaticText uses SS_OWNERDRAW (see StaticText.cpp), so
-                // WM_CTLCOLORSTATIC actually fires for native Edit/ComboBox
-                // labels. Match the surface colour so any native label blends
-                // with the panel, and use text_secondary (a soft warm grey
-                // #6B6862) rather than near-black #1F1E1D — the near-black is
-                // what made labels look harsh against the cream background.
                 HDC dc = reinterpret_cast<HDC>(w);
                 SetBkMode(dc, TRANSPARENT);
                 SetTextColor(dc, palette_.text_secondary.rgb);
                 return reinterpret_cast<LRESULT>(background_brush());
             }
             case WM_CTLCOLOREDIT: {
-                // Native Edit field — text + back-colour to match the panel.
                 HDC dc = reinterpret_cast<HDC>(w);
                 SetBkMode(dc, OPAQUE);
                 SetBkColor(dc, palette_.background.rgb);
@@ -251,11 +186,19 @@ protected:
                 return reinterpret_cast<LRESULT>(background_brush());
             }
             case WM_DPICHANGED: {
-                dpi_ = LOWORD(w);   // per-monitor DPI of the new monitor
-                // Bump our cached NFUI fonts (next paint rebuilds them).
-                // NFUI controls query DpiScale themselves for paint, so we
-                // just need to invalidate everything.
-                InvalidateRect(hwnd(), nullptr, TRUE);
+                dpi_ = LOWORD(w);
+                s_   = nfui::DpiScale(dpi_);
+                // Honor the suggested rect from lParam (per-monitor DPI
+                // contract). We keep NOMOVE because the OS already placed
+                // the window where it wants it.
+                const RECT* suggested = reinterpret_cast<const RECT*>(l);
+                SetWindowPos(hwnd(), nullptr,
+                             0, 0,
+                             suggested->right  - suggested->left,
+                             suggested->bottom - suggested->top,
+                             SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE);
+                rebuild_layout();
+                refresh_hotkey_labels();
                 return 0;
             }
         }
@@ -266,10 +209,14 @@ protected:
         switch (id) {
             case IDC_HK_TILE_CAPTURE:  if (code == BN_CLICKED) { start_capture(CapTile);  return true; } break;
             case IDC_HK_PAUSE_CAPTURE: if (code == BN_CLICKED) { start_capture(CapPause); return true; } break;
-            case IDC_APPLY_BTN:        if (code == BN_CLICKED) { on_apply();   return true; } break;
-            case IDC_CANCEL_BTN:       if (code == BN_CLICKED) { on_close();   return true; } break;
+            case IDC_PROC_NAME_ADD:    if (code == BN_CLICKED) { on_add_named();         return true; } break;
+            case IDC_PROC_PICK_REFRESH:if (code == BN_CLICKED) { refresh_running_processes(); return true; } break;
+            case IDC_PROC_PICK_ADD:    if (code == BN_CLICKED) { on_add_picked();        return true; } break;
+            case IDC_PROC_REMOVE:      if (code == BN_CLICKED) { on_remove_selected();   return true; } break;
+            case IDC_APPLY_BTN:        if (code == BN_CLICKED) { on_apply();             return true; } break;
+            case IDC_CANCEL_BTN:       if (code == BN_CLICKED) { on_close();             return true; } break;
             case IDC_OPEN_CONFIG_BTN:  if (code == BN_CLICKED) { UIBridge::open_config_file(); return true; } break;
-            case IDC_EXIT_BTN:         if (code == BN_CLICKED) { on_exit_btn(); return true; } break;
+            case IDC_EXIT_BTN:         if (code == BN_CLICKED) { on_exit_btn();          return true; } break;
             default: break;
         }
         return false;
@@ -278,10 +225,8 @@ protected:
 private:
     // -------- utilities ------------------------------------------------
 
-    // Lazy-create + cache the background brush. Cache invalidation on
-    // theme change isn't needed today (the dialog re-creates its window
-    // on theme switch), but the lazy create keeps the first paint path
-    // cheap and avoids leaking brushes on destruction.
+    int px(int logical) const { return s_.logical_to_pixels(logical); }
+
     HBRUSH background_brush() noexcept {
         if (bg_brush_ == nullptr) {
             bg_brush_ = CreateSolidBrush(palette_.background.rgb);
@@ -289,92 +234,168 @@ private:
         return bg_brush_;
     }
 
-    // -------- control-builders (NFUI) ---------------------------------
+    // -------- layout rebuild (initial + DPI change) --------------------
+
+    // Tear down every child and rebuild at the current DPI. NFUI controls
+    // don't expose a resize hook, so destroy+create is the cleanest path.
+    // After rebuild_layout, controls_ is empty so we don't leak the prior
+    // tree (each unique_ptr's destructor destroys its HWND).
+    void rebuild_layout() {
+        controls_.clear();   // every owned HWND; old vectors are gone
+
+        int x  = px(kLeftMargin);
+        int y  = px(kTopMargin);
+        int label_w = px(kLabelW);
+        int field_w = px(kFieldW);
+
+        // -- Display row --------------------------------------------------
+        add_label(x, y, label_w, px(kRowH), L"&Display", IDC_MONITOR_LABEL);
+        add_combo(x + label_w + px(kGapTight + 2), y, field_w,
+                  IDC_MONITOR_COMBO, px(kComboDropHeight));
+        y += px(kRowH) + px(kGap);
+
+        // -- Processes panel header ---------------------------------------
+        add_label(x, y, label_w + px(kGapTight + 2) + field_w, px(kRowH),
+                  L"&Processes", IDC_PROCESS_LABEL);
+        y += px(kRowH) + px(kGapTight);
+
+        // Row A: free-text name + Add
+        add_edit(x + label_w + px(kGapTight + 2), y, field_w - px(kAddBtnW) - px(kGapTight),
+                 px(kRowH), IDC_PROC_NAME_EDIT);
+        add_button(x + label_w + px(kGapTight + 2) + field_w - px(kAddBtnW), y,
+                   px(kAddBtnW), px(kRowH), L"&Add", IDC_PROC_NAME_ADD);
+        y += px(kRowH) + px(kGapTight);
+
+        // Row B: pick from running processes
+        int pick_w = field_w - px(kAddBtnW) - px(kBtnGap) - 80 /* refresh btn */ - px(kGapTight);
+        add_combo(x + label_w + px(kGapTight + 2), y, pick_w,
+                  IDC_PROC_PICK_COMBO, px(kComboDropHeight));
+        add_button(x + label_w + px(kGapTight + 2) + pick_w + px(kGapTight), y,
+                   80, px(kRowH), L"&Refresh", IDC_PROC_PICK_REFRESH);
+        add_button(x + label_w + px(kGapTight + 2) + field_w - px(kAddBtnW), y,
+                   px(kAddBtnW), px(kRowH), L"A&dd", IDC_PROC_PICK_ADD);
+        y += px(kRowH) + px(kGap);
+
+        // Row C: configured ListBox + Remove button to the right
+        int list_w = field_w - px(kAddBtnW) - px(kGapTight);
+        add_listbox(x + label_w + px(kGapTight + 2), y, list_w, px(kProcListH),
+                    IDC_PROC_LIST);
+        add_button(x + label_w + px(kGapTight + 2) + list_w + px(kGapTight), y,
+                   px(kAddBtnW), px(kProcListH), L"&Remove", IDC_PROC_REMOVE);
+        y += px(kProcListH) + px(kGap);
+
+        // -- Padding ------------------------------------------------------
+        add_label(x, y, label_w, px(kRowH), L"&Padding (px)", IDC_PADDING_LABEL);
+        add_edit(x + label_w + px(kGapTight + 2), y, px(kPaddingFieldW),
+                 px(kRowH), IDC_PADDING_EDIT);
+        y += px(kRowH) + px(kGap);
+
+        // -- Hotkey rows --------------------------------------------------
+        int cap_w  = px(kCaptureBtnW);
+        int disp_w = field_w - cap_w - px(kGapTight);
+        add_label(x, y, label_w, px(kRowH), L"&Tile-now hotkey", IDC_HK_TILE_LABEL);
+        add_edit(x + label_w + px(kGapTight + 2), y, disp_w, px(kRowH),
+                 IDC_HK_TILE_DISPLAY, true);
+        add_button(x + label_w + px(kGapTight + 2) + disp_w + px(kGapTight), y,
+                   cap_w, px(kRowH), L"Captur&e", IDC_HK_TILE_CAPTURE);
+        y += px(kRowH) + px(kGap);
+
+        add_label(x, y, label_w, px(kRowH), L"P&ause hotkey", IDC_HK_PAUSE_LABEL);
+        add_edit(x + label_w + px(kGapTight + 2), y, disp_w, px(kRowH),
+                 IDC_HK_PAUSE_DISPLAY, true);
+        add_button(x + label_w + px(kGapTight + 2) + disp_w + px(kGapTight), y,
+                   cap_w, px(kRowH), L"Capt&ure", IDC_HK_PAUSE_CAPTURE);
+        y += px(kRowH) + px(kGap);
+
+        // -- Autostart ----------------------------------------------------
+        add_check(x, y, label_w + px(kGapTight + 2) + field_w, px(kRowH),
+                  L"Start with &Windows (auto-launch at logon)",
+                  IDC_AUTOSTART_CHECK);
+        y += px(kRowH) + px(kGap);
+
+        // -- Log level ----------------------------------------------------
+        add_label(x, y, label_w, px(kRowH), L"&Log level", IDC_LOGLEVEL_LABEL);
+        add_combo(x + label_w + px(kGapTight + 2), y, px(kLogLevelComboW),
+                  IDC_LOGLEVEL_COMBO, px(kComboDropHeight));
+        y += px(kRowH) + px(kGapBeforeButton);
+
+        // -- Buttons row --------------------------------------------------
+        int btn_h = px(kRowH) + px(kGapTight);
+        int right = x + label_w + px(kGapTight + 2) + field_w;
+        add_button(x, y, 150, btn_h, L"Open &config file...",
+                   IDC_OPEN_CONFIG_BTN);
+        add_button(right - 2 * px(kAddBtnW) - px(kBtnGap), y, px(kAddBtnW), btn_h,
+                   L"&Apply", IDC_APPLY_BTN);
+        add_button(right - px(kAddBtnW), y, px(kAddBtnW), btn_h,
+                   L"Cancel", IDC_CANCEL_BTN);
+        // Exit between Open-config and the right cluster; secondary style.
+        int exit_x = x + 158;
+        nfui::ButtonStyle est{};
+        est.secondary = true;
+        (void)exit_btn_.set_style(est);
+        add_button(exit_x, y, 150, btn_h, L"E&xit AutoTerminal",
+                   IDC_EXIT_BTN);
+
+        // -- Initial state ------------------------------------------------
+        populate_monitors();
+        populate_log_levels();
+        apply_text_widgets();
+        apply_check_state();
+        refresh_hotkey_labels();
+        populate_configured_list();
+    }
+
+    // -------- control builders ----------------------------------------
 
     void add_label(int x, int y, int w, int h, std::wstring_view text, int id) {
         nfui::ControlCreateParams p{inst_, hwnd(), id, text, x, y, w, h};
-        labels_.push_back(std::make_unique<nfui::StaticText>());
-        (void)labels_.back()->inject_theme(&palette_, &fonts_);
-        // Form labels at NFUI's sm (12 pt) regular weight in text_secondary.
-        // Skipping semibold keeps them light against the cream surface and
-        // matches the visual weight of the Edit fields beside them — a
-        // semibold label next to a regular input reads as "label louder
-        // than value", which is the wrong hierarchy for a settings dialog.
+        auto lbl = std::make_unique<nfui::StaticText>();
+        (void)lbl->inject_theme(&palette_, &fonts_);
         nfui::TextStyle ts{};
-        ts.font_size_pt  = nfui::font_pt::sm;
-        ts.foreground    = palette_.text_secondary;
-        ts.align_v       = nfui::StaticTextAlignV::middle;
-        (void)labels_.back()->set_style(ts);
-        (void)labels_.back()->create(p);
+        ts.font_size_pt = nfui::font_pt::sm;
+        ts.foreground   = palette_.text_secondary;
+        ts.align_v      = nfui::StaticTextAlignV::middle;
+        (void)lbl->set_style(ts);
+        (void)lbl->create(p);
+        controls_.push_back(std::move(lbl));
     }
 
     void add_edit(int x, int y, int w, int h, int id, bool readonly = false) {
+        const DWORD ro_style = readonly ? static_cast<DWORD>(ES_READONLY)
+                                        : static_cast<DWORD>(ES_AUTOHSCROLL);
         nfui::ControlCreateParams p{inst_, hwnd(), id, L"",
                                     x, y, w, h,
-                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP |
-                                    (readonly ? ES_READONLY : ES_AUTOHSCROLL)};
+                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ro_style};
         if (id == IDC_PADDING_EDIT) p.style |= ES_NUMBER;
-        // WS_BORDER draws a 1-px flat frame; WS_EX_CLIENTEDGE would draw a
-        // 2-px carved-in look that fights the cream surface tone. The flat
-        // border plus the surrounding panel background reads more like a
-        // SettingsDemo "card" surface.
-        p.style    |= WS_BORDER;
-        p.ex_style  = 0;
-        edits_.push_back(std::make_unique<nfui::Edit>());
-        (void)edits_.back()->inject_theme(&palette_, &fonts_);
-        (void)edits_.back()->create(p);
-        // Native Edit needs explicit font adoption. NFUI's xs (11 pt) reads
-        // tighter than sm inside a 1-px-bordered field at 100 % DPI; it also
-        // matches the visual weight of the small label text next to it so
-        // the form reads as a flat table rather than label-vs-value mismatch.
+        p.style   |= WS_BORDER;
+        p.ex_style = 0;
+        auto e = std::make_unique<nfui::Edit>();
+        (void)e->inject_theme(&palette_, &fonts_);
+        (void)e->create(p);
         HFONT f = (id == IDC_PADDING_EDIT)
                     ? fonts_.mono(dpi_, nfui::font_pt::xs)
                     : fonts_.regular(dpi_, nfui::font_pt::xs);
-        SendMessageW(edits_.back()->hwnd(), WM_SETFONT,
+        SendMessageW(e->hwnd(), WM_SETFONT,
                      reinterpret_cast<WPARAM>(f), TRUE);
+        controls_.push_back(std::move(e));
     }
 
     void add_button(int x, int y, int w, int h, std::wstring_view text, int id) {
         nfui::ControlCreateParams p{inst_, hwnd(), id, text, x, y, w, h};
-        // Owner-draw NFUI Button paints itself; suppress native style bits.
-        switch (id) {
-            case IDC_APPLY_BTN:
-            case IDC_OPEN_CONFIG_BTN:
-            case IDC_HK_TILE_CAPTURE:
-            case IDC_HK_PAUSE_CAPTURE: {
-                // Primary accent face.
-                nfui::Button& b = button_for(id);
-                (void)b.inject_theme(&palette_, &fonts_);
-                (void)b.create(p);
-                break;
-            }
-            case IDC_CANCEL_BTN:
-            case IDC_EXIT_BTN: {
-                // Secondary (surface tone) face for the destructive / neutral
-                // actions so they don't compete with Apply.
-                nfui::Button& b = button_for(id);
-                nfui::ButtonStyle s{};
-                s.secondary = true;
-                (void)b.set_style(s);
-                (void)b.inject_theme(&palette_, &fonts_);
-                (void)b.create(p);
-                // IDC_EXIT_BTN routes through button_for() to exit_btn_ directly,
-                // so no separate alias assignment is needed.
-                break;
-            }
-        }
+        nfui::Button& b = button_for(id);
+        (void)b.inject_theme(&palette_, &fonts_);
+        (void)b.create(p);
     }
 
-    void add_check(int x, int y, int w, int h, std::wstring_view text, int id) {
-        (void)id;
-        nfui::ControlCreateParams p{inst_, hwnd(), id, text, x, y, w, h};
+    void add_check(int x, int y, int w, int h, std::wstring_view text, int /*id*/) {
+        nfui::ControlCreateParams p{inst_, hwnd(), IDC_AUTOSTART_CHECK, text, x, y, w, h};
         (void)auto_check_.inject_theme(&palette_, &fonts_);
         (void)auto_check_.create(p);
     }
 
-    void add_combo(int x, int y, int w, int id) {
+    void add_combo(int x, int y, int w, int id, int drop_h) {
         nfui::ControlCreateParams p{inst_, hwnd(), id, L"",
-                                    x, y, w, 220,
+                                    x, y, w, drop_h,
                                     WS_CHILD | WS_VISIBLE | WS_TABSTOP |
                                     CBS_DROPDOWNLIST};
         switch (id) {
@@ -382,16 +403,29 @@ private:
                 (void)monitor_combo_.inject_theme(&palette_, &fonts_);
                 (void)monitor_combo_.create(p);
                 break;
+            case IDC_PROC_PICK_COMBO:
+                (void)proc_pick_combo_.inject_theme(&palette_, &fonts_);
+                (void)proc_pick_combo_.create(p);
+                break;
             case IDC_LOGLEVEL_COMBO:
                 (void)loglevel_combo_.inject_theme(&palette_, &fonts_);
                 (void)loglevel_combo_.create(p);
                 break;
             default: break;
         }
-        // NFUI ComboBox wraps the native control; set font.
         HWND h = GetDlgItem(hwnd(), id);
         HFONT f = fonts_.regular(dpi_, nfui::font_pt::xs);
         SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(f), TRUE);
+    }
+
+    void add_listbox(int x, int y, int w, int h, int id) {
+        nfui::ControlCreateParams p{inst_, hwnd(), id, L"",
+                                    x, y, w, h,
+                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                                    LBS_NOTIFY | LBS_HASSTRINGS | WS_VSCROLL |
+                                    WS_BORDER};
+        (void)proc_list_.inject_theme(&palette_, &fonts_);
+        (void)proc_list_.create(p);
     }
 
     nfui::Button& button_for(int id) {
@@ -402,11 +436,15 @@ private:
             case IDC_CANCEL_BTN:       return btn_cancel_;
             case IDC_OPEN_CONFIG_BTN:  return btn_open_cfg_;
             case IDC_EXIT_BTN:         return exit_btn_;
+            case IDC_PROC_NAME_ADD:    return btn_proc_name_add_;
+            case IDC_PROC_PICK_ADD:    return btn_proc_pick_add_;
+            case IDC_PROC_PICK_REFRESH:return btn_proc_refresh_;
+            case IDC_PROC_REMOVE:      return btn_proc_remove_;
         }
         return btn_apply_;
     }
 
-    // -------- state machine -------------------------------------------
+    // -------- state population ----------------------------------------
 
     void populate_monitors() {
         HWND combo = GetDlgItem(hwnd(), IDC_MONITOR_COMBO);
@@ -453,9 +491,79 @@ private:
         SendMessageW(combo, CB_SETCURSEL, sel, 0);
     }
 
+    void refresh_running_processes() {
+        HWND combo = GetDlgItem(hwnd(), IDC_PROC_PICK_COMBO);
+        if (!combo) return;
+        SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+        auto names = enumerate_running_process_names();
+        for (const auto& n : names) {
+            SendMessageW(combo, CB_ADDSTRING, 0,
+                         reinterpret_cast<LPARAM>(n.c_str()));
+        }
+        if (SendMessageW(combo, CB_GETCOUNT, 0, 0) > 0) {
+            SendMessageW(combo, CB_SETCURSEL, 0, 0);
+        }
+        AT_LOG_DEBUG("Refreshed running-process picker: %zu entries", names.size());
+    }
+
+    void populate_configured_list() {
+        HWND lb = GetDlgItem(hwnd(), IDC_PROC_LIST);
+        if (!lb) return;
+        SendMessageW(lb, LB_RESETCONTENT, 0, 0);
+        for (const auto& n : cfg_.process_names) {
+            SendMessageW(lb, LB_ADDSTRING, 0,
+                         reinterpret_cast<LPARAM>(n.c_str()));
+        }
+    }
+
+    void on_add_named() {
+        std::wstring txt;
+        HWND edit = GetDlgItem(hwnd(), IDC_PROC_NAME_EDIT);
+        if (!get_edit_text(edit, txt)) return;
+        std::wstring name = trim_ws(txt);
+        if (name.empty()) return;
+        add_to_configured_list(name);
+        SetWindowTextW(edit, L"");
+        SetFocus(edit);
+    }
+
+    void on_add_picked() {
+        HWND combo = GetDlgItem(hwnd(), IDC_PROC_PICK_COMBO);
+        int sel = static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
+        if (sel < 0) return;
+        wchar_t buf[MAX_PATH]{};
+        SendMessageW(combo, CB_GETLBTEXT, sel, reinterpret_cast<LPARAM>(buf));
+        std::wstring name = buf;
+        if (name.empty()) return;
+        add_to_configured_list(name);
+    }
+
+    void on_remove_selected() {
+        HWND lb = GetDlgItem(hwnd(), IDC_PROC_LIST);
+        int sel = static_cast<int>(SendMessageW(lb, LB_GETCURSEL, 0, 0));
+        if (sel < 0) return;
+        SendMessageW(lb, LB_DELETESTRING, sel, 0);
+        int n = static_cast<int>(SendMessageW(lb, LB_GETCOUNT, 0, 0));
+        if (n == 0) {
+            SetFocus(lb);
+            return;
+        }
+        int new_sel = sel < n ? sel : n - 1;
+        SendMessageW(lb, LB_SETCURSEL, new_sel, 0);
+    }
+
+    void add_to_configured_list(const std::wstring& name) {
+        HWND lb = GetDlgItem(hwnd(), IDC_PROC_LIST);
+        if (listbox_contains(lb, name)) {
+            AT_LOG_DEBUG("Process already in configured list: %ls", name.c_str());
+            return;
+        }
+        SendMessageW(lb, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));
+        int n = static_cast<int>(SendMessageW(lb, LB_GETCOUNT, 0, 0));
+        SendMessageW(lb, LB_SETCURSEL, n - 1, 0);
+    }
+
     void apply_text_widgets() {
-        SetWindowTextW(GetDlgItem(hwnd(), IDC_PROCESS_EDIT),
-                       join_csv(cfg_.process_names).c_str());
         set_edit_int(GetDlgItem(hwnd(), IDC_PADDING_EDIT), cfg_.padding);
     }
 
@@ -516,10 +624,19 @@ private:
     }
 
     void on_apply() {
-        std::wstring txt;
-        if (get_edit_text(GetDlgItem(hwnd(), IDC_PROCESS_EDIT), txt)) {
-            cfg_.process_names = split_csv(txt);
+        cfg_.process_names.clear();
+        HWND lb = GetDlgItem(hwnd(), IDC_PROC_LIST);
+        int n = static_cast<int>(SendMessageW(lb, LB_GETCOUNT, 0, 0));
+        for (int i = 0; i < n; ++i) {
+            wchar_t buf[MAX_PATH]{};
+            SendMessageW(lb, LB_GETTEXT, i, reinterpret_cast<LPARAM>(buf));
+            std::wstring name = trim_ws(buf);
+            if (!name.empty()) cfg_.process_names.push_back(std::move(name));
         }
+        if (cfg_.process_names.empty()) {
+            cfg_.process_names.push_back(L"WindowsTerminal.exe");
+        }
+
         int pad_v = 0;
         if (get_edit_int(GetDlgItem(hwnd(), IDC_PADDING_EDIT), pad_v)) {
             cfg_.padding = std::max(0, pad_v);
@@ -573,34 +690,47 @@ private:
     Config     cfg_{};
     SettingsCallbacks cbs_{};
     int        dpi_{96};
+    nfui::DpiScale s_{96};
     CaptureState cap_{CapNone};
     std::optional<Hotkey> pending_tile_;
     std::optional<Hotkey> pending_pause_;
 
     nfui::ThemePalette palette_{};
     nfui::FontCache    fonts_{};
-    HBRUSH             bg_brush_{nullptr};   // cached palette_.background brush
+    HBRUSH             bg_brush_{nullptr};
 
-    // Owned NFUI controls. The labels / edits vectors avoid enumerating
-    // 6 distinct member variables for the row labels; the buttons that
-    // need individually-accessed styling keep named members.
-    // nfui::Control (and derived) deletes both copy and move, so they cannot
-    // live in a std::vector<...> directly. We heap-allocate via unique_ptr
-    // and own them through SettingsWindow's lifetime.
-    std::vector<std::unique_ptr<nfui::StaticText>> labels_;
-    std::vector<std::unique_ptr<nfui::Edit>>       edits_;
-    nfui::Button                  btn_tile_cap_{};
-    nfui::Button                  btn_pause_cap_{};
-    nfui::Button                  btn_apply_{};
-    nfui::Button                  btn_cancel_{};
-    nfui::Button                  btn_open_cfg_{};
-    nfui::Button                  exit_btn_{};
-    nfui::CheckBox                auto_check_{};
-    nfui::ComboBox                monitor_combo_{};
-    nfui::ComboBox                loglevel_combo_{};
+    // NFUI controls that need stable identity (so we can style them or read
+    // their values) live as named members. Transient labels / edits / generic
+    // buttons go through controls_ and are rebuilt on DPI change.
+    std::vector<std::unique_ptr<nfui::Control>> controls_;
+    nfui::Button btn_tile_cap_{};
+    nfui::Button btn_pause_cap_{};
+    nfui::Button btn_apply_{};
+    nfui::Button btn_cancel_{};
+    nfui::Button btn_open_cfg_{};
+    nfui::Button exit_btn_{};
+    nfui::Button btn_proc_name_add_{};
+    nfui::Button btn_proc_pick_add_{};
+    nfui::Button btn_proc_refresh_{};
+    nfui::Button btn_proc_remove_{};
+    nfui::CheckBox auto_check_{};
+    nfui::ComboBox monitor_combo_{};
+    nfui::ComboBox proc_pick_combo_{};
+    nfui::ComboBox loglevel_combo_{};
+    nfui::ListBox  proc_list_{};
 };
 
 } // namespace
+
+// Public-facing default size helper so main.cpp's initial ShowWindow matches
+// the dialog's logical dimensions at the host's current DPI.
+SettingsWindowDefaultSize default_settings_window_size(int dpi) noexcept {
+    nfui::DpiScale s(dpi);
+    SettingsWindowDefaultSize sz{};
+    sz.cx = s.logical_to_pixels(kDefaultWidthPx);
+    sz.cy = s.logical_to_pixels(kDefaultHeightPx);
+    return sz;
+}
 
 HWND create_settings_window(HINSTANCE hinst, Config initial, SettingsCallbacks cbs) {
     auto* w = new SettingsWindow(hinst, std::move(initial), std::move(cbs));

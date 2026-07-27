@@ -25,6 +25,12 @@ HWND create_settings_window(HINSTANCE hinst,
                             Config initial,
                             SettingsCallbacks cbs);
 
+// Returns the dialog's default width/height (in physical pixels) at `dpi`.
+// main.cpp uses this to size the initial SetWindowPos call so the first show
+// matches the dialog's own DPI-aware layout instead of fighting it.
+struct SettingsWindowDefaultSize { long cx; long cy; };
+SettingsWindowDefaultSize default_settings_window_size(int dpi) noexcept;
+
 void show_settings_window(HWND hwnd, bool show);
 bool settings_window_visible(HWND hwnd);
 

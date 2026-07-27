@@ -11,6 +11,7 @@
 #include "window_manager.h"
 
 #include <nfui/Application.hpp>
+#include <nfui/Dpi.hpp>
 
 #include <windows.h>
 
@@ -286,12 +287,16 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, LPWSTR cmdline, int show_cmd) {
     // --silent → tray-only (used by the autostart entry at logon).
     if (!g_silent || first_run) {
         // Position the dialog deterministically on the primary work area
-        // (CW_USEDEFAULT can land it on an off-screen monitor).
+        // (CW_USEDEFAULT can land it on an off-screen monitor). Size in DPI-
+        // aware physical pixels so the first ShowWindow matches the dialog's
+        // own layout grid at the host's current DPI.
         RECT primary{};
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &primary, 0);
+        auto sz = autoterminal::default_settings_window_size(
+            nfui::dpi_of(g_settings_hwnd));
         SetWindowPos(g_settings_hwnd, nullptr,
                       primary.left + 80, primary.top + 80,
-                      560, 380,
+                      sz.cx, sz.cy,
                       SWP_NOZORDER | SWP_NOACTIVATE);
         autoterminal::show_settings_window(g_settings_hwnd, true);
         force_foreground(g_settings_hwnd);

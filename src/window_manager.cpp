@@ -17,13 +17,14 @@ struct EnumCtx {
     const std::unordered_set<std::wstring>* allowed;
 };
 
-bool ends_with_ci(const std::wstring& s, const std::wstring& suffix) {
-    if (s.size() < suffix.size()) return false;
-    for (size_t i = 0; i < suffix.size(); ++i) {
-        if (std::towlower(s[s.size() - suffix.size() + i]) !=
-            std::towlower(suffix[i])) return false;
+// ASCII-only lowercase. Process basenames are always ASCII filenames in
+// practice, so locale-aware std::towlower (Turkish dotless i, etc.) is
+// unnecessarily surprising for a config-match path.
+std::wstring ascii_lower(std::wstring s) {
+    for (auto& c : s) {
+        if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
     }
-    return true;
+    return s;
 }
 
 std::wstring process_name_from_pid(DWORD pid) {
@@ -52,7 +53,8 @@ BOOL CALLBACK enum_proc(HWND hwnd, LPARAM lparam) {
     GetWindowThreadProcessId(hwnd, &pid);
     std::wstring name = process_name_from_pid(pid);
     if (name.empty()) return TRUE;
-    if (ctx->allowed->find(name) == ctx->allowed->end()) return TRUE;
+    // Case-insensitive match: lookup key is the ASCII-lowered basename.
+    if (ctx->allowed->find(ascii_lower(name)) == ctx->allowed->end()) return TRUE;
 
     ctx->out->push_back(WindowEntry{hwnd, pid, std::move(name)});
     return TRUE;
@@ -63,8 +65,14 @@ BOOL CALLBACK enum_proc(HWND hwnd, LPARAM lparam) {
 std::vector<WindowEntry> collect_terminal_windows(
     const std::vector<std::wstring>& allowed_processes) {
     std::vector<WindowEntry> out;
-    std::unordered_set<std::wstring> allowed(allowed_processes.begin(),
-                                             allowed_processes.end());
+    // Allowed set is keyed by ASCII-lowered configured names so the runtime
+    // lookup can be a plain find() on a lowercased basename. TOML preserves
+    // the user's original casing; we lowercase only inside the matcher.
+    std::unordered_set<std::wstring> allowed;
+    allowed.reserve(allowed_processes.size());
+    for (const auto& name : allowed_processes) {
+        allowed.insert(ascii_lower(name));
+    }
     EnumCtx ctx{&out, &allowed};
     EnumWindows(enum_proc, reinterpret_cast<LPARAM>(&ctx));
     return out;

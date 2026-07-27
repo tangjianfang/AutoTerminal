@@ -80,6 +80,7 @@ add_library(autoterminal_core STATIC
     src/settings_dialog.cpp
     src/tray_menu.cpp
     src/about_dialog.cpp
+    src/process_lister.cpp
 )
 target_include_directories(autoterminal_core PUBLIC src)
 target_link_libraries(autoterminal_core PUBLIC

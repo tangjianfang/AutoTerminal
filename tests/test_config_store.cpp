@@ -59,6 +59,38 @@ TEST(ConfigStore, RejectsGarbage) {
     EXPECT_FALSE(loaded.has_value());
 }
 
+TEST(ConfigStore, MultiElementProcessNamesRoundTrip) {
+    // Build a config with three distinct process names and verify the
+    // TOML array round-trip preserves the order and content.
+    auto file_path = tmp_file("multi.toml");
+    Config cfg;
+    cfg.process_names = {L"WindowsTerminal.exe", L"wezterm.exe",
+                         L"powershell.exe"};
+    cfg.target_monitor.clear();
+    save_config(file_path, cfg);
+
+    auto loaded = load_config(file_path);
+    ASSERT_TRUE(loaded.has_value());
+    ASSERT_EQ(loaded->process_names.size(), 3u);
+    EXPECT_EQ(loaded->process_names[0], L"WindowsTerminal.exe");
+    EXPECT_EQ(loaded->process_names[1], L"wezterm.exe");
+    EXPECT_EQ(loaded->process_names[2], L"powershell.exe");
+}
+
+TEST(ConfigStore, PreservesProcessNameCasing) {
+    // The matcher lowercases internally; TOML must preserve the user's
+    // casing so the picker dropdown reads "WindowsTerminal.exe" not
+    // "windowsterminal.exe".
+    auto file_path = tmp_file("casing.toml");
+    Config cfg;
+    cfg.process_names = {L"WezTerm.exe"};   // mixed case intentionally
+    save_config(file_path, cfg);
+    auto loaded = load_config(file_path);
+    ASSERT_TRUE(loaded.has_value());
+    ASSERT_EQ(loaded->process_names.size(), 1u);
+    EXPECT_EQ(loaded->process_names[0], L"WezTerm.exe");
+}
+
 TEST(ConfigStore, HotkeyParseBasic) {
     auto hk = parse_hotkey(L"Ctrl+Alt+T");
     ASSERT_TRUE(hk.has_value());
