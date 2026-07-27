@@ -248,13 +248,13 @@ private:
     void add_label(int x, int y, int w, int h, std::wstring_view text, int id) {
         nfui::ControlCreateParams p{inst_, hwnd(), id, text, x, y, w, h};
         labels_.push_back(std::make_unique<nfui::StaticText>());
-        labels_.back()->inject_theme(&palette_, &fonts_);
+        (void)labels_.back()->inject_theme(&palette_, &fonts_);
         // Subtle body labels: sm size, left-aligned.
         nfui::TextStyle ts{};
         ts.font_size_pt = nfui::font_pt::sm;
         ts.align_v = nfui::StaticTextAlignV::middle;
-        labels_.back()->set_style(ts);
-        labels_.back()->create(p);
+        (void)labels_.back()->set_style(ts);
+        (void)labels_.back()->create(p);
     }
 
     void add_edit(int x, int y, int w, int h, int id, bool readonly = false) {
@@ -265,8 +265,8 @@ private:
         if (id == IDC_PADDING_EDIT) p.style |= ES_NUMBER;
         p.ex_style = WS_EX_CLIENTEDGE;
         edits_.push_back(std::make_unique<nfui::Edit>());
-        edits_.back()->inject_theme(&palette_, &fonts_);
-        edits_.back()->create(p);
+        (void)edits_.back()->inject_theme(&palette_, &fonts_);
+        (void)edits_.back()->create(p);
         // Edit is a native control — needs explicit font adoption.
         HFONT f = (id == IDC_PADDING_EDIT)
                     ? fonts_.mono(dpi_, nfui::font_pt::sm)
@@ -285,8 +285,8 @@ private:
             case IDC_HK_PAUSE_CAPTURE: {
                 // Primary accent face.
                 nfui::Button& b = button_for(id);
-                b.inject_theme(&palette_, &fonts_);
-                b.create(p);
+                (void)b.inject_theme(&palette_, &fonts_);
+                (void)b.create(p);
                 break;
             }
             case IDC_CANCEL_BTN:
@@ -296,9 +296,9 @@ private:
                 nfui::Button& b = button_for(id);
                 nfui::ButtonStyle s{};
                 s.secondary = true;
-                b.set_style(s);
-                b.inject_theme(&palette_, &fonts_);
-                b.create(p);
+                (void)b.set_style(s);
+                (void)b.inject_theme(&palette_, &fonts_);
+                (void)b.create(p);
                 // IDC_EXIT_BTN routes through button_for() to exit_btn_ directly,
                 // so no separate alias assignment is needed.
                 break;
@@ -309,8 +309,8 @@ private:
     void add_check(int x, int y, int w, int h, std::wstring_view text, int id) {
         (void)id;
         nfui::ControlCreateParams p{inst_, hwnd(), id, text, x, y, w, h};
-        auto_check_.inject_theme(&palette_, &fonts_);
-        auto_check_.create(p);
+        (void)auto_check_.inject_theme(&palette_, &fonts_);
+        (void)auto_check_.create(p);
     }
 
     void add_combo(int x, int y, int w, int id) {
@@ -319,8 +319,14 @@ private:
                                     WS_CHILD | WS_VISIBLE | WS_TABSTOP |
                                     CBS_DROPDOWNLIST};
         switch (id) {
-            case IDC_MONITOR_COMBO: monitor_combo_.inject_theme(&palette_, &fonts_); monitor_combo_.create(p); break;
-            case IDC_LOGLEVEL_COMBO: loglevel_combo_.inject_theme(&palette_, &fonts_); loglevel_combo_.create(p); break;
+            case IDC_MONITOR_COMBO:
+                (void)monitor_combo_.inject_theme(&palette_, &fonts_);
+                (void)monitor_combo_.create(p);
+                break;
+            case IDC_LOGLEVEL_COMBO:
+                (void)loglevel_combo_.inject_theme(&palette_, &fonts_);
+                (void)loglevel_combo_.create(p);
+                break;
             default: break;
         }
         // NFUI ComboBox wraps the native control; set font.

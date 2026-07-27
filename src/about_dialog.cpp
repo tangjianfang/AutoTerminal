@@ -37,31 +37,31 @@ public:
         // Title (serif, xl size).
         nfui::ControlCreateParams p{inst_, hwnd(), 0, L"AutoTerminal",
                                     20, 18, 340, 32};
-        title_.inject_theme(&palette_, &fonts_);
+        (void)title_.inject_theme(&palette_, &fonts_);
         nfui::TextStyle ts{};
         ts.use_semibold = true;
         ts.font_size_pt = nfui::font_pt::xl;
-        title_.set_style(ts);
-        title_.create(p);
+        (void)title_.set_style(ts);
+        (void)title_.create(p);
 
         // Body (regular sans, sm size).
         nfui::ControlCreateParams bp{inst_, hwnd(), 0,
             L"Tiling terminal windows onto a chosen display.\n\n"
             L"Tip: right-click the tray icon for Settings.",
             20, 56, 340, 80};
-        body_.inject_theme(&palette_, &fonts_);
+        (void)body_.inject_theme(&palette_, &fonts_);
         nfui::TextStyle bs{};
         bs.font_size_pt = nfui::font_pt::sm;
         bs.single_line = false;
         bs.end_ellipsis = false;
-        body_.set_style(bs);
-        body_.create(bp);
+        (void)body_.set_style(bs);
+        (void)body_.create(bp);
 
         // OK button (accent face, secondary = false for primary action).
         nfui::ControlCreateParams op{inst_, hwnd(), kIdOk, L"OK",
                                      280, 150, 80, 28};
-        ok_.inject_theme(&palette_, &fonts_);
-        ok_.create(op);
+        (void)ok_.inject_theme(&palette_, &fonts_);
+        (void)ok_.create(op);
 
         // Per SettingsDemo pattern: Edit/StaticText/Button paint themselves,
         // so suppress erase to avoid a flicker.

@@ -155,16 +155,31 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, LPWSTR cmdline, int show_cmd) {
     // /settings: same as default for manual double-click — show settings.
     g_silent = has_flag(cmdline, L"--silent") || has_flag(cmdline, L"/silent");
 
+    // Initialize logging first so NFUI-init failures can be recorded.
+    auto log_path = config_dir() / L"autoterminal.log";
+    init_logger(log_path.wstring(), LogLevel::Info);
+
     // NativeFrameUI prerequisite initialization: PerMonitorV2 DPI awareness +
     // common-control classes. Must run before any HWND (settings window,
     // event-source message window, About / settings child controls) is
     // created. Safe to call once here in the daemon's main thread; the
-    // static helpers are idempotent.
-    nfui::Application::initialize_process_dpi();
-    nfui::Application::initialize_common_controls();
-
-    auto log_path = config_dir() / L"autoterminal.log";
-    init_logger(log_path.wstring(), LogLevel::Info);
+    // static helpers are idempotent. A failure here is unrecoverable — we
+    // would be creating themed controls that can't render correctly, so log
+    // the reason and exit with a non-zero code rather than limping along.
+    if (!nfui::Application::initialize_process_dpi()) {
+        AT_LOG_ERROR("NFUI initialize_process_dpi failed — aborting startup");
+        MessageBoxW(nullptr,
+                    L"AutoTerminal: failed to enable per-monitor DPI awareness.",
+                    L"AutoTerminal", MB_ICONERROR | MB_OK);
+        return 2;
+    }
+    if (!nfui::Application::initialize_common_controls()) {
+        AT_LOG_ERROR("NFUI initialize_common_controls failed — aborting startup");
+        MessageBoxW(nullptr,
+                    L"AutoTerminal: failed to initialize common controls.",
+                    L"AutoTerminal", MB_ICONERROR | MB_OK);
+        return 2;
+    }
 
     AT_LOG_INFO("==== AutoTerminal starting (silent=%s) ====",
                 g_silent ? "true" : "false");

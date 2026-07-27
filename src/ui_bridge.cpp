@@ -277,6 +277,13 @@ void UIBridge::on_tray_message(HWND /*hwnd*/, LPARAM lparam) {
     constexpr UINT kNotifyIconV4Mask = 0xFFFFu;
     UINT raw    = static_cast<UINT>(lparam);
     UINT msg    = raw & kNotifyIconV4Mask;
+
+    // MOUSEMOVE fires constantly while the cursor is over the tray icon
+    // (V4 status). Logging each one buries everything else — drop to DEBUG.
+    if (msg == WM_MOUSEMOVE) {
+        AT_LOG_DEBUG("on_tray_message: MOUSEMOVE");
+        return;
+    }
     AT_LOG_INFO("on_tray_message: lparam=0x%X (msg=%s, v4=%s)",
                 raw,
                 msg == WM_LBUTTONDOWN  ? "LBUTTONDOWN"  :
@@ -285,22 +292,34 @@ void UIBridge::on_tray_message(HWND /*hwnd*/, LPARAM lparam) {
                 msg == WM_RBUTTONDOWN  ? "RBUTTONDOWN"  :
                 msg == WM_RBUTTONUP    ? "RBUTTONUP"    :
                 msg == WM_RBUTTONDBLCLK? "RBUTTONDBLCLK":
-                msg == WM_CONTEXTMENU  ? "CONTEXTMENU"  :
-                msg == WM_MOUSEMOVE    ? "MOUSEMOVE"    : "OTHER",
+                msg == WM_CONTEXTMENU  ? "CONTEXTMENU"  : "OTHER",
                 (raw & ~kNotifyIconV4Mask) ? "yes" : "no");
+
+    // RBUTTONDOWN, RBUTTONUP, and CONTEXTMENU all arrive on a single right-click
+    // gesture (V4 shell coalesces them). TrackPopupMenu's TPM_RETURNCMD would
+    // block the message pump and re-enter on the same gesture, so guard with
+    // a re-entrancy flag and prefer RBUTTONUP (which fires after the click is
+    // complete) as the canonical trigger.
+    static thread_local bool in_context_menu = false;
+    if (in_context_menu) {
+        AT_LOG_DEBUG("on_tray_message: suppressing re-entrant tray gesture");
+        return;
+    }
     switch (msg) {
         case WM_RBUTTONUP:
         case WM_CONTEXTMENU:
-        case WM_RBUTTONDOWN:
+        case WM_LBUTTONUP: {
+            // Some shells send only LBUTTONUP — show the menu anyway, treating
+            // it as a single-click activation. Better to over-show than miss.
+            in_context_menu = true;
             show_context_menu();
+            in_context_menu = false;
             break;
+        }
         case WM_LBUTTONDBLCLK:
             dispatch(TrayCmdTileNow);
             break;
-        case WM_LBUTTONUP:
-            // Some shells send only LBUTTONUP — show the menu anyway, treating
-            // it as a single-click activation. Better to over-show than miss.
-            show_context_menu();
+        default:
             break;
     }
 }
