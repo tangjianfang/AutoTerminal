@@ -1,0 +1,9 @@
+// AutoTerminal — Windows resource file.
+//
+// Embeds src/app.ico as the executable's main icon. CMake compiles this
+// with rc.exe and links the resulting .res into AutoTerminal.exe so the
+// taskbar / ALT-TAB / Explorer thumbnail all pick up the brand mark.
+
+#include <winuser.h>
+
+IDI_APPICON  ICON  "app.ico"

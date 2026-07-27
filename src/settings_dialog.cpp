@@ -130,9 +130,12 @@ public:
 
         dpi_ = nfui::DpiScale(nfui::dpi_of(hwnd())).dpi();   // capture at create time
 
-        int row_h = 28, gap = 8;
-        int x = 16, label_w = 140, field_w = 360;
-        int y = 16;
+        // Tighter row geometry: 24-px rows with 6-px gaps reads as a normal
+        // form rather than a wide spaced-out panel. label_w is widened to
+        // fit "&Processes (comma-separated)" on one line at sm size.
+        int row_h = 24, gap = 6;
+        int x = 14, label_w = 168, field_w = 360;
+        int y = 12;
 
         // -- Display row ------------------------------------------------
         add_label(x, y, label_w, row_h, L"&Display", IDC_MONITOR_LABEL);
@@ -292,13 +295,13 @@ private:
         nfui::ControlCreateParams p{inst_, hwnd(), id, text, x, y, w, h};
         labels_.push_back(std::make_unique<nfui::StaticText>());
         (void)labels_.back()->inject_theme(&palette_, &fonts_);
-        // Form labels: base size + semibold, sitting one notch under the
-        // SettingsDemo's lg panel titles. Use text_secondary (warm grey) so
-        // they don't fight the near-black body text for attention — this is
-        // the single biggest contributor to the "harsh / fake-black" feel.
+        // Form labels at NFUI's sm (12 pt) regular weight in text_secondary.
+        // Skipping semibold keeps them light against the cream surface and
+        // matches the visual weight of the Edit fields beside them — a
+        // semibold label next to a regular input reads as "label louder
+        // than value", which is the wrong hierarchy for a settings dialog.
         nfui::TextStyle ts{};
-        ts.font_size_pt  = nfui::font_pt::base;
-        ts.use_semibold  = true;
+        ts.font_size_pt  = nfui::font_pt::sm;
         ts.foreground    = palette_.text_secondary;
         ts.align_v       = nfui::StaticTextAlignV::middle;
         (void)labels_.back()->set_style(ts);
@@ -320,11 +323,13 @@ private:
         edits_.push_back(std::make_unique<nfui::Edit>());
         (void)edits_.back()->inject_theme(&palette_, &fonts_);
         (void)edits_.back()->create(p);
-        // Native Edit needs explicit font adoption. Use NFUI's sm body size
-        // (12 pt) — same scale SettingsDemo uses for its body inputs.
+        // Native Edit needs explicit font adoption. NFUI's xs (11 pt) reads
+        // tighter than sm inside a 1-px-bordered field at 100 % DPI; it also
+        // matches the visual weight of the small label text next to it so
+        // the form reads as a flat table rather than label-vs-value mismatch.
         HFONT f = (id == IDC_PADDING_EDIT)
-                    ? fonts_.mono(dpi_, nfui::font_pt::sm)
-                    : fonts_.regular(dpi_, nfui::font_pt::sm);
+                    ? fonts_.mono(dpi_, nfui::font_pt::xs)
+                    : fonts_.regular(dpi_, nfui::font_pt::xs);
         SendMessageW(edits_.back()->hwnd(), WM_SETFONT,
                      reinterpret_cast<WPARAM>(f), TRUE);
     }
@@ -385,7 +390,7 @@ private:
         }
         // NFUI ComboBox wraps the native control; set font.
         HWND h = GetDlgItem(hwnd(), id);
-        HFONT f = fonts_.regular(dpi_, nfui::font_pt::sm);
+        HFONT f = fonts_.regular(dpi_, nfui::font_pt::xs);
         SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(f), TRUE);
     }
 
