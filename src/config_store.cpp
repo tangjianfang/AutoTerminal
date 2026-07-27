@@ -56,6 +56,24 @@ std::string_view format_level(LogLevel l) {
     }
 }
 
+} // namespace
+
+LayoutMode parse_layout_mode(std::string_view s) {
+    if (s == "stack")   return LayoutMode::Stack;
+    if (s == "monocle") return LayoutMode::Monocle;
+    return LayoutMode::Grid;   // "grid" and anything unrecognized
+}
+
+std::string_view layout_mode_name(LayoutMode m) {
+    switch (m) {
+        case LayoutMode::Stack:   return "stack";
+        case LayoutMode::Monocle: return "monocle";
+        default:                  return "grid";
+    }
+}
+
+namespace {
+
 const toml::table* as_table(const toml::node* n) {
     return n ? n->as_table() : nullptr;
 }
@@ -92,9 +110,40 @@ std::optional<Config> load_config(const fs::path& path) {
     }
 
     if (const toml::table* t = as_table(res.get("targets")); t) {
-        if (const toml::array* a = as_array(t->get("process_names")); a) {
+        // Preferred schema: [[targets.process]] array of tables, each
+        //   { name = "...", layout = "grid|stack|monocle", monitor = "..." }.
+        // We read it into the three lockstep vectors (process_names,
+        // process_layouts, process_monitors) so per-process layout mode and
+        // monitor binding persist.
+        if (const toml::array* a = as_array(t->get("process")); a) {
             cfg.process_names.clear();
+            cfg.process_layouts.clear();
+            cfg.process_monitors.clear();
             for (const auto& el : *a) {
+                const toml::table* pt = as_table(&el);
+                if (!pt) continue;
+                std::string name = pt->get("name")->value_or(std::string{});
+                if (name.empty()) continue;
+                cfg.process_names.push_back(widen(name));
+                if (const toml::node* lm = pt->get("layout"); lm && lm->is_string()) {
+                    cfg.process_layouts.push_back(
+                        parse_layout_mode(lm->value_or(std::string{"grid"})));
+                } else {
+                    cfg.process_layouts.push_back(LayoutMode::Grid);
+                }
+                if (const toml::node* mon = pt->get("monitor"); mon && mon->is_string()) {
+                    cfg.process_monitors.push_back(widen(mon->value_or(std::string{})));
+                } else {
+                    cfg.process_monitors.push_back(std::wstring{});
+                }
+            }
+            if (cfg.process_names.empty()) cfg.process_names.push_back(L"WindowsTerminal.exe");
+        } else if (const toml::array* legacy = as_array(t->get("process_names")); legacy) {
+            // Backward compatibility: a bare string array loads as Grid layout
+            // on the inherited (global target_monitor) — process_layouts /
+            // process_monitors stay empty so every rule inherits the defaults.
+            cfg.process_names.clear();
+            for (const auto& el : *legacy) {
                 std::string s = el.value_or(std::string{});
                 if (!s.empty()) cfg.process_names.push_back(widen(s));
             }
@@ -143,9 +192,31 @@ void save_config(const fs::path& path, const Config& cfg) {
     toml::table root;
     {
         toml::table targets;
-        toml::array arr;
-        for (const auto& n : cfg.process_names) arr.push_back(narrow(n));
-        targets.insert("process_names", std::move(arr));
+        // Emit the [[process]] table array only when some rule actually uses a
+        // non-default layout or an explicit per-process monitor — otherwise we
+        // keep the legacy bare `process_names` array so default configs stay
+        // byte-compatible with older installs (and the round-trip tests).
+        bool any_per_process = false;
+        for (size_t i = 0; i < cfg.process_names.size(); ++i) {
+            if (layout_for(cfg, i) != LayoutMode::Grid) { any_per_process = true; break; }
+            if (!monitor_for(cfg, i).empty())           { any_per_process = true; break; }
+        }
+        if (any_per_process) {
+            toml::array procs;
+            for (size_t i = 0; i < cfg.process_names.size(); ++i) {
+                toml::table pt;
+                pt.insert("name", narrow(cfg.process_names[i]));
+                pt.insert("layout", std::string(layout_mode_name(layout_for(cfg, i))));
+                std::wstring mon = monitor_for(cfg, i);
+                pt.insert("monitor", narrow(mon));
+                procs.push_back(std::move(pt));
+            }
+            targets.insert("process", std::move(procs));
+        } else {
+            toml::array arr;
+            for (const auto& n : cfg.process_names) arr.push_back(narrow(n));
+            targets.insert("process_names", std::move(arr));
+        }
         targets.insert("target_monitor", narrow(cfg.target_monitor));
         root.insert("targets", std::move(targets));
     }

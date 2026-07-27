@@ -30,28 +30,19 @@ void pick_grid(int window_count, int& rows, int& cols) {
     else                        { cols = 3; rows = (window_count + 2) / 3; }
 }
 
-} // namespace
-
-Layout compute_layout(Rect monitor, int window_count, int padding) {
-    Layout out;
-    if (window_count <= 0 || monitor.w <= 0 || monitor.h <= 0) return out;
-
-    int best_rows, best_cols;
-    pick_grid(window_count, best_rows, best_cols);
-
-    int cell_w = monitor.w / best_cols;
-    int cell_h = monitor.h / best_rows;
-    int rem_w = monitor.w - cell_w * best_cols;
-    int rem_h = monitor.h - cell_h * best_rows;
-
-    out.rows = best_rows;
-    out.cols = best_cols;
-    out.cells.assign(static_cast<size_t>(best_rows) * best_cols, Rect{});
-
-    for (int r = 0; r < best_rows; ++r) {
+// Split `monitor` into a rows x cols grid of absolute cells, distributing the
+// remainder pixels to the first rows/cols so the grid always exactly covers
+// the monitor. `padding` insets each cell uniformly on all four sides.
+std::vector<Rect> grid_cells(Rect monitor, int rows, int cols, int padding) {
+    std::vector<Rect> cells(static_cast<size_t>(rows) * cols, Rect{});
+    int cell_w = monitor.w / cols;
+    int cell_h = monitor.h / rows;
+    int rem_w  = monitor.w - cell_w * cols;
+    int rem_h  = monitor.h - cell_h * rows;
+    for (int r = 0; r < rows; ++r) {
         int y = monitor.y + r * cell_h + std::min(r, rem_h);
         int h = cell_h + (r < rem_h ? 1 : 0);
-        for (int c = 0; c < best_cols; ++c) {
+        for (int c = 0; c < cols; ++c) {
             int x = monitor.x + c * cell_w + std::min(c, rem_w);
             int w = cell_w + (c < rem_w ? 1 : 0);
             Rect cell{x, y, w, h};
@@ -63,7 +54,58 @@ Layout compute_layout(Rect monitor, int window_count, int padding) {
                 if (cell.w < 1) cell.w = 1;
                 if (cell.h < 1) cell.h = 1;
             }
-            out.cells[static_cast<size_t>(r) * best_cols + c] = cell;
+            cells[static_cast<size_t>(r) * cols + c] = cell;
+        }
+    }
+    return cells;
+}
+
+} // namespace
+
+Layout compute_layout(Rect monitor, int window_count, int padding) {
+    return compute_layout(monitor, window_count, padding, LayoutMode::Grid);
+}
+
+Layout compute_layout(Rect monitor, int window_count, int padding, LayoutMode mode) {
+    Layout out;
+    if (window_count <= 0 || monitor.w <= 0 || monitor.h <= 0) return out;
+
+    int rows = 0, cols = 0;
+    switch (mode) {
+        case LayoutMode::Grid:
+            pick_grid(window_count, rows, cols);
+            out.rows = rows;
+            out.cols = cols;
+            out.cells = grid_cells(monitor, rows, cols, padding);
+            return out;
+        case LayoutMode::Stack:
+            // Single column, N equal-height rows. rows*cols == N exactly.
+            rows = window_count;
+            cols = 1;
+            out.rows = rows;
+            out.cols = cols;
+            out.cells = grid_cells(monitor, rows, cols, padding);
+            return out;
+        case LayoutMode::Monocle: {
+            // Every window fills the whole monitor (overlapping). We expose
+            // rows == N, cols == 1 so cells.size() == rows*cols holds, but
+            // every cell is the full monitor rect — the windows stack on top
+            // of each other and the user cycles via the taskbar / Alt+Tab.
+            rows = window_count;
+            cols = 1;
+            Rect full = monitor;
+            if (padding > 0) {
+                full.x += padding;
+                full.y += padding;
+                full.w -= 2 * padding;
+                full.h -= 2 * padding;
+                if (full.w < 1) full.w = 1;
+                if (full.h < 1) full.h = 1;
+            }
+            out.rows = rows;
+            out.cols = cols;
+            out.cells.assign(static_cast<size_t>(window_count), full);
+            return out;
         }
     }
     return out;

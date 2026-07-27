@@ -126,3 +126,59 @@ TEST(TileEngine, ReminderPixelsDistributed) {
     EXPECT_EQ(l.cells[1].w, 333);
     EXPECT_EQ(l.cells[2].w, 333);
 }
+
+TEST(TileEngine, GridIsTheDefaultMode) {
+    // The 3-arg overload must match a 4-arg Grid call exactly.
+    Layout a = compute_layout({0, 0, 1920, 1080}, 5, 0);
+    Layout b = compute_layout({0, 0, 1920, 1080}, 5, 0, LayoutMode::Grid);
+    EXPECT_EQ(a.rows, b.rows);
+    EXPECT_EQ(a.cols, b.cols);
+    ASSERT_EQ(a.cells.size(), b.cells.size());
+    for (size_t i = 0; i < a.cells.size(); ++i) {
+        EXPECT_EQ(a.cells[i].x, b.cells[i].x);
+        EXPECT_EQ(a.cells[i].w, b.cells[i].w);
+    }
+}
+
+TEST(TileEngine, StackLayoutIsSingleColumn) {
+    // Stack = 1 column, N equal-height rows; total area still covers the
+    // monitor exactly (remainder distributed to the leading rows).
+    Layout l = compute_layout({0, 0, 1920, 1080}, 3, 0, LayoutMode::Stack);
+    EXPECT_EQ(l.rows, 3);
+    EXPECT_EQ(l.cols, 1);
+    ASSERT_EQ(l.cells.size(), 3u);
+    for (const auto& c : l.cells) EXPECT_EQ(c.w, 1920);   // full width each
+    long long total = 0;
+    for (const auto& c : l.cells) total += static_cast<long long>(c.w) * c.h;
+    EXPECT_EQ(total, 1920LL * 1080LL);
+    // Stacked top-to-bottom, anchored at the monitor origin.
+    EXPECT_EQ(l.cells[0].x, 0);
+    EXPECT_EQ(l.cells[0].y, 0);
+    EXPECT_EQ(l.cells[2].y + l.cells[2].h, 1080);
+}
+
+TEST(TileEngine, MonocleLayoutAllFullscreen) {
+    // Monocle = every window gets the full monitor rect (overlapping). The
+    // cells are identical and equal to the whole monitor.
+    Rect mon{0, 0, 1920, 1080};
+    Layout l = compute_layout(mon, 4, 0, LayoutMode::Monocle);
+    EXPECT_EQ(l.cells.size(), 4u);
+    for (const auto& c : l.cells) {
+        EXPECT_EQ(c.x, mon.x);
+        EXPECT_EQ(c.y, mon.y);
+        EXPECT_EQ(c.w, mon.w);
+        EXPECT_EQ(c.h, mon.h);
+    }
+}
+
+TEST(TileEngine, MonocleLayoutAppliesPadding) {
+    Rect mon{10, 20, 1920, 1080};
+    Layout l = compute_layout(mon, 2, 8, LayoutMode::Monocle);
+    ASSERT_EQ(l.cells.size(), 2u);
+    for (const auto& c : l.cells) {
+        EXPECT_EQ(c.x, mon.x + 8);
+        EXPECT_EQ(c.y, mon.y + 8);
+        EXPECT_EQ(c.w, mon.w - 16);
+        EXPECT_EQ(c.h, mon.h - 16);
+    }
+}

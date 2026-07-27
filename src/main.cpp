@@ -44,46 +44,59 @@ bool has_flag(LPCWSTR cmdline, LPCWSTR flag) {
     return false;
 }
 
-// Tile windows matching `only` into a grid on the target monitor. Assumes
-// g_state_mutex is already held by the caller.
-bool perform_tile_locked(const std::vector<std::wstring>& only) {
+// Tile the configured processes selected by `rule_indices`, each onto its own
+// resolved monitor with its own layout mode. Windows of any process NOT in the
+// list are left untouched. Assumes g_state_mutex is already held by the caller.
+bool perform_tile_locked_rules(const std::vector<size_t>& rule_indices) {
+    if (rule_indices.empty()) return false;
     auto monitors = autoterminal::enumerate_monitors();
-    const auto* target = autoterminal::resolve_monitor(monitors, g_config.target_monitor);
-    if (!target) {
-        AT_LOG_WARN("Target monitor not found (%s) — falling back to primary",
-                    autoterminal::monitor_log_label(g_config.target_monitor).c_str());
-        target = autoterminal::resolve_monitor(monitors, L"");
+    bool any_placed = false;
+
+    for (size_t i : rule_indices) {
+        if (i >= g_config.process_names.size()) continue;
+        const auto& name = g_config.process_names[i];
+
+        // Resolve this rule's monitor: a per-rule monitor overrides the global
+        // target_monitor; an empty/global value resolves to primary.
+        std::wstring mon_id = autoterminal::monitor_for(g_config, i);
+        if (mon_id.empty()) mon_id = g_config.target_monitor;
+        const auto* target = autoterminal::resolve_monitor(monitors, mon_id);
+        if (!target) {
+            AT_LOG_WARN("Rule %zu ('%ls'): monitor '%s' not found — falling back to primary",
+                        i, name.c_str(),
+                        autoterminal::monitor_log_label(mon_id).c_str());
+            target = autoterminal::resolve_monitor(monitors, L"");
+        }
+        if (!target) {
+            AT_LOG_WARN("Rule %zu ('%ls'): no monitors at all — skipping", i, name.c_str());
+            continue;
+        }
+
+        auto mode = autoterminal::layout_for(g_config, i);
+        auto windows = autoterminal::collect_terminal_windows({name});
+        if (windows.empty()) {
+            AT_LOG_DEBUG("Rule %zu ('%ls'): no matching windows", i, name.c_str());
+            continue;
+        }
+        auto layout = autoterminal::compute_layout(target->rect,
+                                                   static_cast<int>(windows.size()),
+                                                   g_config.padding, mode);
+        int placed = autoterminal::apply_layout(windows, layout);
+        AT_LOG_INFO("Tiled %d/%zu '%ls' into %dx%d (%s) on '%s'",
+                    placed, windows.size(), name.c_str(), layout.rows, layout.cols,
+                    autoterminal::layout_mode_name(mode).data(),
+                    autoterminal::monitor_log_label(target->friendly_name).c_str());
+        if (placed > 0) any_placed = true;
     }
-    if (!target) {
-        AT_LOG_WARN("No monitors at all — nothing to tile");
-        return false;
-    }
-    auto windows = autoterminal::collect_terminal_windows(only);
-    if (windows.empty()) {
-        AT_LOG_DEBUG("No terminal windows match configured process names");
-        return false;
-    }
-    auto layout = autoterminal::compute_layout(target->rect,
-                                               static_cast<int>(windows.size()),
-                                               g_config.padding);
-    int placed = autoterminal::apply_layout(windows, layout);
-    AT_LOG_INFO("Tiled %d/%zu windows into %dx%d on '%s'",
-                placed, windows.size(), layout.rows, layout.cols,
-                autoterminal::monitor_log_label(target->friendly_name).c_str());
-    return placed > 0;
+    return any_placed;
 }
 
 bool perform_tile() {
     std::lock_guard<std::mutex> lock(g_state_mutex);
-    return perform_tile_locked(g_config.process_names);
-}
-
-// Tile only the windows of a restricted process set (e.g. the Tile-specific
-// hotkey), leaving every other window where it is. `only` is snapshotted by
-// value and matched case-insensitively by collect_terminal_windows.
-bool perform_tile_filtered(const std::vector<std::wstring>& only) {
-    std::lock_guard<std::mutex> lock(g_state_mutex);
-    return perform_tile_locked(only);
+    std::vector<size_t> all;
+    all.reserve(g_config.process_names.size());
+    for (size_t i = 0; i < g_config.process_names.size(); ++i) all.push_back(i);
+    return perform_tile_locked_rules(all);
 }
 
 void on_command(autoterminal::EventSource::Command cmd) {
@@ -112,12 +125,13 @@ void on_command(autoterminal::EventSource::Command cmd) {
         case autoterminal::EventSource::Command::TileSpecific: {
             // Tile only the first configured process — the user can drag-reorder
             // the list (Settings) to pick which one this hotkey targets. All
-            // other windows are left untouched.
+            // other windows are left untouched. The first rule's own layout
+            // mode and monitor binding apply.
             std::lock_guard<std::mutex> lock(g_state_mutex);
             if (!g_config.process_names.empty()) {
                 AT_LOG_INFO("Tile-specific: tiling only '%ls'",
                             g_config.process_names[0].c_str());
-                perform_tile_locked({g_config.process_names[0]});
+                perform_tile_locked_rules({0});
             }
             break;
         }

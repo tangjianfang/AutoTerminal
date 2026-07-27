@@ -16,8 +16,19 @@ struct Hotkey {
     UINT vk = 0;          // virtual key code
 };
 
+// Per-process tiling mode. Grid is the classic matrix; Stack is a single
+// equal-height column (1 col x N rows); Monocle places every window at the
+// full monitor rect (overlapping — cycle via the taskbar / Alt+Tab).
+enum class LayoutMode : int { Grid = 0, Stack = 1, Monocle = 2 };
+
 struct Config {
     std::vector<std::wstring> process_names = {L"WindowsTerminal.exe"};
+    // Per-process layout mode / monitor, lockstep with process_names by index.
+    // A shorter (or empty) vector means "inherit": Grid for layout, and the
+    // global target_monitor for monitor. This keeps bare-array configs (which
+    // only populate process_names) backward-compatible.
+    std::vector<LayoutMode>   process_layouts;
+    std::vector<std::wstring> process_monitors;
     std::wstring target_monitor;          // friendly name or GDI name; empty = primary
     Hotkey hotkey_tile       {MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'T'};
     Hotkey hotkey_toggle_pause{MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, 'T'};
@@ -27,6 +38,21 @@ struct Config {
     LogLevel log_level = LogLevel::Info;
     int padding = 0;
 };
+
+// Layout mode for process index `i`, defaulting to Grid when unset/short.
+inline LayoutMode layout_for(const Config& c, size_t i) {
+    return (i < c.process_layouts.size()) ? c.process_layouts[i] : LayoutMode::Grid;
+}
+
+// Monitor id for process index `i`, defaulting to "" (inherit target_monitor)
+// when unset/short.
+inline std::wstring monitor_for(const Config& c, size_t i) {
+    return (i < c.process_monitors.size()) ? c.process_monitors[i] : std::wstring{};
+}
+
+// "grid" / "stack" / "monocle" <-> LayoutMode.
+LayoutMode parse_layout_mode(std::string_view s);
+std::string_view layout_mode_name(LayoutMode m);
 
 // Returns the directory %APPDATA%\AutoTerminal, creating it if necessary.
 std::filesystem::path config_dir();

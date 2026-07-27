@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "config_store.h"
+
 namespace autoterminal {
 
 struct Rect {
@@ -26,5 +28,11 @@ struct Layout {
 // `monitor` is in virtual-screen coordinates; the returned cells are absolute.
 // `padding` shrinks every cell uniformly on all four sides (0 = edge-to-edge).
 Layout compute_layout(Rect monitor, int window_count, int padding = 0);
+
+// As above, but selects the grid shape by `mode`:
+//   Grid    — matrix (the classic pick_grid shape above)
+//   Stack   — single column, N equal-height rows (1 col x N rows)
+//   Monocle — every window gets the full monitor rect (overlapping)
+Layout compute_layout(Rect monitor, int window_count, int padding, LayoutMode mode);
 
 } // namespace autoterminal

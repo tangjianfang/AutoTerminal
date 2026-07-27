@@ -5,6 +5,8 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <string>
 
 // windows.h is needed for UINT and the MOD_* constants referenced below.
 #include <windows.h>
@@ -133,6 +135,94 @@ TEST(ConfigStore, TileSpecificHotkeyDisabledByDefault) {
     ASSERT_TRUE(loaded.has_value());
     EXPECT_EQ(loaded->hotkey_tile_specific.vk, 0u);
     EXPECT_EQ(loaded->hotkey_tile_specific.modifiers, 0u);
+}
+
+TEST(ConfigStore, ProcessRuleRoundTrip) {
+    // A config with per-process layout + monitor bindings must round-trip via
+    // the [[targets.process]] table array.
+    auto file_path = tmp_file("rules.toml");
+    Config cfg;
+    cfg.process_names   = {L"WindowsTerminal.exe", L"wezterm.exe", L"pwsh.exe"};
+    cfg.process_layouts = {LayoutMode::Grid, LayoutMode::Stack, LayoutMode::Monocle};
+    cfg.process_monitors = {L"", L"primary", L"Dell U2723QE"};
+    save_config(file_path, cfg);
+
+    auto loaded = load_config(file_path);
+    ASSERT_TRUE(loaded.has_value());
+    ASSERT_EQ(loaded->process_names.size(), 3u);
+    EXPECT_EQ(loaded->process_names[0], L"WindowsTerminal.exe");
+    EXPECT_EQ(loaded->process_names[1], L"wezterm.exe");
+    EXPECT_EQ(loaded->process_names[2], L"pwsh.exe");
+    // Lockstep vectors survive the round-trip.
+    ASSERT_EQ(loaded->process_layouts.size(), 3u);
+    EXPECT_EQ(loaded->process_layouts[0], LayoutMode::Grid);
+    EXPECT_EQ(loaded->process_layouts[1], LayoutMode::Stack);
+    EXPECT_EQ(loaded->process_layouts[2], LayoutMode::Monocle);
+    ASSERT_EQ(loaded->process_monitors.size(), 3u);
+    EXPECT_EQ(loaded->process_monitors[0], L"");
+    EXPECT_EQ(loaded->process_monitors[1], L"primary");
+    EXPECT_EQ(loaded->process_monitors[2], L"Dell U2723QE");
+}
+
+TEST(ConfigStore, BareArrayBackwardCompat) {
+    // A legacy config that only has a bare process_names string array must
+    // load into process_names with empty layout/monitor vectors (inherit Grid
+    // + the global target_monitor).
+    auto file_path = tmp_file("legacy.toml");
+    {
+        std::ofstream f(file_path);
+        f << "[targets]\n"
+             "process_names = [\"WindowsTerminal.exe\", \"wezterm.exe\"]\n"
+             "target_monitor = \"\"\n";
+    }
+    auto loaded = load_config(file_path);
+    ASSERT_TRUE(loaded.has_value());
+    ASSERT_EQ(loaded->process_names.size(), 2u);
+    EXPECT_EQ(loaded->process_names[0], L"WindowsTerminal.exe");
+    EXPECT_EQ(loaded->process_names[1], L"wezterm.exe");
+    // No per-process overrides → both vectors empty so layout_for/monitor_for
+    // fall back to Grid / inherit.
+    EXPECT_TRUE(loaded->process_layouts.empty());
+    EXPECT_TRUE(loaded->process_monitors.empty());
+    EXPECT_EQ(layout_for(*loaded, 0), LayoutMode::Grid);
+    EXPECT_TRUE(monitor_for(*loaded, 0).empty());
+}
+
+TEST(ConfigStore, DefaultConfigSavesBareArray) {
+    // A default config (all Grid, all empty monitors) must save back as the
+    // bare process_names array, byte-compatible with older installs.
+    auto file_path = tmp_file("default_fmt.toml");
+    Config cfg;  // single default name, no per-process overrides
+    save_config(file_path, cfg);
+    std::ifstream f(file_path);
+    std::string content((std::istreambuf_iterator<char>(f)),
+                         std::istreambuf_iterator<char>());
+    EXPECT_NE(content.find("process_names"), std::string::npos);
+    EXPECT_EQ(content.find("[[targets.process]]"), std::string::npos);
+}
+
+TEST(ConfigStore, PerProcessConfigSavesTableArray) {
+    // Once any rule uses a non-default layout/monitor, the save format
+    // switches to the [[targets.process]] table array.
+    auto file_path = tmp_file("rules_fmt.toml");
+    Config cfg;
+    cfg.process_names = {L"WindowsTerminal.exe", L"wezterm.exe"};
+    cfg.process_layouts = {LayoutMode::Grid, LayoutMode::Stack};
+    save_config(file_path, cfg);
+    std::ifstream f(file_path);
+    std::string content((std::istreambuf_iterator<char>(f)),
+                         std::istreambuf_iterator<char>());
+    EXPECT_NE(content.find("[[targets.process]]"), std::string::npos);
+}
+
+TEST(ConfigStore, LayoutModeParseAndName) {
+    EXPECT_EQ(parse_layout_mode("grid"), LayoutMode::Grid);
+    EXPECT_EQ(parse_layout_mode("stack"), LayoutMode::Stack);
+    EXPECT_EQ(parse_layout_mode("monocle"), LayoutMode::Monocle);
+    EXPECT_EQ(parse_layout_mode("unknown"), LayoutMode::Grid);  // default
+    EXPECT_EQ(layout_mode_name(LayoutMode::Grid), "grid");
+    EXPECT_EQ(layout_mode_name(LayoutMode::Stack), "stack");
+    EXPECT_EQ(layout_mode_name(LayoutMode::Monocle), "monocle");
 }
 
 TEST(ConfigStore, HotkeyParseBasic) {
