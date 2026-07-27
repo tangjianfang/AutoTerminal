@@ -34,14 +34,15 @@ constexpr wchar_t kTitle[] = L"AutoTerminal Settings";
 // Logical-pixel layout grid (100 % DPI baseline). All coordinates flow through
 // DpiScale::logical_to_pixels at build time so the dialog stays aligned at any
 // DPI. Heights here are at 100 % DPI; bump kDefaultHeightPx if you add rows.
-constexpr int kDefaultWidthPx  = 560;
-constexpr int kDefaultHeightPx = 380;
+constexpr int kDefaultWidthPx  = 580;
+constexpr int kDefaultHeightPx = 440;
 constexpr int kRowH            = 24;
 constexpr int kGap             = 6;
 constexpr int kGapTight        = 4;
 constexpr int kGapBeforeButton = 8;
 constexpr int kLeftMargin      = 14;
 constexpr int kTopMargin       = 12;
+constexpr int kBottomMargin    = 14;
 constexpr int kLabelW          = 168;
 constexpr int kFieldW          = 360;
 constexpr int kPaddingFieldW   = 80;
@@ -49,6 +50,9 @@ constexpr int kLogLevelComboW  = 160;
 constexpr int kCaptureBtnW     = 96;
 constexpr int kAddBtnW         = 90;
 constexpr int kBtnGap          = 8;
+constexpr int kOpenCfgBtnW     = 150;
+constexpr int kExitBtnW        = 150;
+constexpr int kRefreshBtnW     = 80;
 constexpr int kProcListH       = 72;
 constexpr int kComboDropHeight = 220;
 
@@ -267,11 +271,11 @@ private:
         y += px(kRowH) + px(kGapTight);
 
         // Row B: pick from running processes
-        int pick_w = field_w - px(kAddBtnW) - px(kBtnGap) - 80 /* refresh btn */ - px(kGapTight);
+        int pick_w = field_w - px(kAddBtnW) - px(kBtnGap) - px(kRefreshBtnW) - px(kGapTight);
         add_combo(x + label_w + px(kGapTight + 2), y, pick_w,
                   IDC_PROC_PICK_COMBO, px(kComboDropHeight));
         add_button(x + label_w + px(kGapTight + 2) + pick_w + px(kGapTight), y,
-                   80, px(kRowH), L"&Refresh", IDC_PROC_PICK_REFRESH);
+                   px(kRefreshBtnW), px(kRowH), L"&Refresh", IDC_PROC_PICK_REFRESH);
         add_button(x + label_w + px(kGapTight + 2) + field_w - px(kAddBtnW), y,
                    px(kAddBtnW), px(kRowH), L"A&dd", IDC_PROC_PICK_ADD);
         y += px(kRowH) + px(kGap);
@@ -322,18 +326,18 @@ private:
         // -- Buttons row --------------------------------------------------
         int btn_h = px(kRowH) + px(kGapTight);
         int right = x + label_w + px(kGapTight + 2) + field_w;
-        add_button(x, y, 150, btn_h, L"Open &config file...",
+        add_button(x, y, px(kOpenCfgBtnW), btn_h, L"Open &config file...",
                    IDC_OPEN_CONFIG_BTN);
         add_button(right - 2 * px(kAddBtnW) - px(kBtnGap), y, px(kAddBtnW), btn_h,
                    L"&Apply", IDC_APPLY_BTN);
         add_button(right - px(kAddBtnW), y, px(kAddBtnW), btn_h,
                    L"Cancel", IDC_CANCEL_BTN);
         // Exit between Open-config and the right cluster; secondary style.
-        int exit_x = x + 158;
+        int exit_x = x + px(kOpenCfgBtnW) + px(kBtnGap);
         nfui::ButtonStyle est{};
         est.secondary = true;
         (void)exit_btn_.set_style(est);
-        add_button(exit_x, y, 150, btn_h, L"E&xit AutoTerminal",
+        add_button(exit_x, y, px(kExitBtnW), btn_h, L"E&xit AutoTerminal",
                    IDC_EXIT_BTN);
 
         // -- Initial state ------------------------------------------------
