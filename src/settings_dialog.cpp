@@ -62,6 +62,8 @@ constexpr int kExportBtnW      = 100;
 constexpr int kImportBtnW      = 100;
 constexpr int kProcListH       = 72;
 constexpr int kComboDropHeight = 220;
+constexpr int kGapSection      = 10;   // breathing room before each section header
+constexpr int kHintH           = 16;   // hint-line height (xs text, single line)
 
 enum CtrlId {
     IDC_MONITOR_LABEL = 1001,
@@ -114,6 +116,17 @@ enum CtrlId {
     IDC_HK_PREVIEW_LABEL,        // "Preview tiling hotkey" label
     IDC_HK_PREVIEW_DISPLAY,      // readonly hotkey display
     IDC_HK_PREVIEW_CAPTURE,      // capture button
+
+    IDC_SECTION_DISPLAY,          // section header "Display & Layout"
+    IDC_SECTION_PROCESSES,        // section header "Processes"
+    IDC_SECTION_HOTKEYS,          // section header "Hotkeys"
+    IDC_SECTION_STARTUP,          // section header "Startup & General"
+
+    IDC_HINT_HOTKEYS,             // capture how-to under Hotkeys header
+    IDC_HINT_PROCESSES,           // rename / reorder help under Processes header
+    IDC_HINT_INSPECTOR,           // "applies to selected process" hint
+    IDC_HINT_PADDING,             // padding meaning
+    IDC_HINT_START_DELAY,         // autostart delay meaning
 };
 
 enum CaptureState { CapNone, CapTile, CapPause, CapTileSpec, CapPreview };
@@ -524,6 +537,39 @@ private:
         nfui::TextStyle ts{};
         ts.font_size_pt = nfui::font_pt::sm;
         ts.foreground   = palette_.text_secondary;
+        ts.align_v      = nfui::StaticTextAlignV::middle;
+        (void)lbl->set_style(ts);
+        (void)lbl->create(p);
+        controls_.push_back(std::move(lbl));
+    }
+
+    // Section heading: semibold, md (14 pt), primary text color — the top
+    // of the dialog's three-level text hierarchy (header / label / hint).
+    void add_section_header(int x, int y, int w, std::wstring_view text, int id) {
+        nfui::ControlCreateParams p{inst_, hwnd(), id, text, x, y, w, px(kRowH)};
+        auto lbl = std::make_unique<nfui::StaticText>();
+        (void)lbl->inject_theme(&palette_, &fonts_);
+        nfui::TextStyle ts{};
+        ts.font_size_pt = nfui::font_pt::md;
+        ts.use_semibold = true;
+        ts.foreground   = palette_.text;
+        ts.align_v      = nfui::StaticTextAlignV::middle;
+        (void)lbl->set_style(ts);
+        (void)lbl->create(p);
+        controls_.push_back(std::move(lbl));
+    }
+
+    // Secondary hint line: xs (11 pt), text_secondary faded 35 % toward the
+    // dialog background so it reads one step below the form labels (which
+    // are text_secondary at sm).
+    void add_hint(int x, int y, int w, std::wstring_view text, int id) {
+        nfui::ControlCreateParams p{inst_, hwnd(), id, text, x, y, w, px(kHintH)};
+        auto lbl = std::make_unique<nfui::StaticText>();
+        (void)lbl->inject_theme(&palette_, &fonts_);
+        nfui::TextStyle ts{};
+        ts.font_size_pt = nfui::font_pt::xs;
+        ts.foreground   = nfui::lerp_color(palette_.text_secondary,
+                                           palette_.background, 0.35f);
         ts.align_v      = nfui::StaticTextAlignV::middle;
         (void)lbl->set_style(ts);
         (void)lbl->create(p);
