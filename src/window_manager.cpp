@@ -82,7 +82,13 @@ int apply_layout(const std::vector<WindowEntry>& windows, const Layout& layout) 
     int placed = 0;
     int n = std::min<int>(static_cast<int>(windows.size()),
                           static_cast<int>(layout.cells.size()));
-    for (int i = 0; i < n; ++i) {
+    // Place in reverse order so successive HWND_TOP inserts preserve the
+    // group's relative z-order: EnumWindows yields topmost-first, and each
+    // HWND_TOP insert leaves the last-processed window highest, so ending
+    // with windows[0] keeps it topmost of the group. The whole group ends
+    // above other applications' windows (raise-once: HWND_TOP, NOT
+    // HWND_TOPMOST). SWP_NOACTIVATE keeps the current focus untouched.
+    for (int i = n - 1; i >= 0; --i) {
         HWND h = windows[i].hwnd;
         const Rect& cell = layout.cells[i];
         if (cell.is_empty()) continue;
@@ -95,10 +101,11 @@ int apply_layout(const std::vector<WindowEntry>& windows, const Layout& layout) 
             ShowWindow(h, SW_RESTORE);
         }
 
-        // SWP_NOZORDER | SWP_NOACTIVATE → preserve current z-order and focus.
-        if (SetWindowPos(h, nullptr,
+        // HWND_TOP (not SWP_NOZORDER) raises the window above other apps
+        // while we move it — one call per window, no extra pass.
+        if (SetWindowPos(h, HWND_TOP,
                          cell.x, cell.y, cell.w, cell.h,
-                         SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)) {
+                         SWP_NOACTIVATE | SWP_FRAMECHANGED)) {
             ++placed;
         } else {
             AT_LOG_WARN("SetWindowPos failed for hwnd=0x%p (gle=%lu)", h, GetLastError());
