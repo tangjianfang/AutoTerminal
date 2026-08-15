@@ -91,7 +91,7 @@ phrases, keep mnemonic accelerators unique per dialog:
 | `P&ause hotkey` | `Pa&use / resume` |
 | `Tile-&specific hotkey` | `Tile &first process` (it tiles only `process_names[0]`) |
 | `Pre&view tiling hotkey` | `Pre&view tiling` |
-| `Start &delay (s)` | `Start &delay (sec)` |
+| `Start &delay (s)` | `&Start delay (sec)` ('d' is taken by Target &display; 's' is free) |
 
 Unchanged: `&Padding (px)`, `&Filter running`, `La&yout`, `Mo&nitor`,
 `&Log level`, `Config &file`, checkbox and button captions.
