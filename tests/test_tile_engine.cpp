@@ -182,3 +182,27 @@ TEST(TileEngine, MonocleLayoutAppliesPadding) {
         EXPECT_EQ(c.h, mon.h - 16);
     }
 }
+TEST(FitRectIn, NoOpWhenItFits) {
+    Rect r = fit_rect_in(Rect{100, 50, 580, 650}, Rect{0, 0, 1920, 1040});
+    EXPECT_EQ(r.x, 670); EXPECT_EQ(r.y, 195);   // centered in work area
+    EXPECT_EQ(r.w, 580); EXPECT_EQ(r.h, 650);   // size untouched
+}
+
+TEST(FitRectIn, ShrinksTooTall) {
+    Rect r = fit_rect_in(Rect{0, 0, 580, 930}, Rect{0, 0, 1366, 720});
+    EXPECT_EQ(r.h, 720);
+    EXPECT_EQ(r.w, 580);
+    EXPECT_EQ(r.x, (1366 - 580) / 2);
+    EXPECT_EQ(r.y, 0);
+}
+
+TEST(FitRectIn, ShrinksTooWideAndTall) {
+    Rect r = fit_rect_in(Rect{0, 0, 880, 560}, Rect{0, 0, 600, 500});
+    EXPECT_EQ(r.w, 600); EXPECT_EQ(r.h, 500);
+    EXPECT_EQ(r.x, 0); EXPECT_EQ(r.y, 0);
+}
+
+TEST(FitRectIn, EmptyWorkAreaPassthrough) {
+    Rect r = fit_rect_in(Rect{10, 10, 400, 300}, Rect{0, 0, 0, 0});
+    EXPECT_EQ(r.w, 0); EXPECT_EQ(r.h, 0);   // degenerate work area wins
+}

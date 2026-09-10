@@ -35,4 +35,9 @@ Layout compute_layout(Rect monitor, int window_count, int padding = 0);
 //   Monocle — every window gets the full monitor rect (overlapping)
 Layout compute_layout(Rect monitor, int window_count, int padding, LayoutMode mode);
 
+// Fit `window` inside `work_area` for dialog placement: shrink dimensions
+// that don't fit, then center the result in the work area. Pure math —
+// callers pass Win32 rects in/out.
+Rect fit_rect_in(Rect window, Rect work_area);
+
 } // namespace autoterminal

@@ -111,4 +111,12 @@ Layout compute_layout(Rect monitor, int window_count, int padding, LayoutMode mo
     return out;
 }
 
+
+Rect fit_rect_in(Rect window, Rect work_area) {
+    int w = std::min(window.w, work_area.w);
+    int h = std::min(window.h, work_area.h);
+    return Rect{work_area.x + (work_area.w - w) / 2,
+                work_area.y + (work_area.h - h) / 2, w, h};
+}
+
 } // namespace autoterminal
