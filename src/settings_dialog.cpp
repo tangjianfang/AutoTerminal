@@ -39,8 +39,16 @@ constexpr wchar_t kTitle[] = L"AutoTerminal Settings";
 // Logical-pixel layout grid (100 % DPI baseline). All coordinates flow through
 // DpiScale::logical_to_pixels at build time so the dialog stays aligned at any
 // DPI. Heights here are at 100 % DPI; bump kDefaultHeightPx if you add rows.
-constexpr int kDefaultWidthPx  = 580;
-constexpr int kDefaultHeightPx = 930;   // +4 headers, +5 two-line hints, gaps
+// Window (not client) size. Content needs an 880x572 client (right column
+// ends at x=866 + 14 margin; buttons end at y=558 + 14 margin); the modal
+// frame eats 16x39 px at 100 % DPI, hence 896x612.
+constexpr int kDefaultWidthPx  = 896;   // two-column layout
+constexpr int kDefaultHeightPx = 612;
+constexpr int kColGap          = 16;   // gutter between the two columns
+constexpr int kLeftColW        = 360;  // left column width (label + field below)
+constexpr int kLeftLabelW      = 116;
+constexpr int kRightColW       = 476;  // right column width (label + field below)
+constexpr int kRightLabelW     = 110;
 constexpr int kRowH            = 24;
 constexpr int kGap             = 6;
 constexpr int kGapTight        = 4;
@@ -48,8 +56,7 @@ constexpr int kGapBeforeButton = 8;
 constexpr int kLeftMargin      = 14;
 constexpr int kTopMargin       = 12;
 constexpr int kBottomMargin    = 14;
-constexpr int kLabelW          = 168;
-constexpr int kFieldW          = 360;
+constexpr int kFieldW          = 360;   // right-column field width
 constexpr int kPaddingFieldW   = 80;
 constexpr int kLogLevelComboW  = 160;
 constexpr int kCaptureBtnW     = 96;
@@ -251,12 +258,24 @@ public:
     }
 
     bool create_main(int show_cmd) {
+        // Fit the desired size into the cursor's monitor work area (shrinks
+        // and centers on small displays instead of overflowing).
+        POINT cursor{};
+        GetCursorPos(&cursor);
+        HMONITOR mon = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi{.cbSize = sizeof(mi)};
+        GetMonitorInfoW(mon, &mi);
+        Rect fitted = fit_rect_in(
+            {0, 0, s_.logical_to_pixels(kDefaultWidthPx),
+                    s_.logical_to_pixels(kDefaultHeightPx)},
+            {mi.rcWork.left, mi.rcWork.top,
+             mi.rcWork.right - mi.rcWork.left,
+             mi.rcWork.bottom - mi.rcWork.top});
+
         if (!create({inst_, kClass, kTitle,
                      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
                      WS_EX_DLGMODALFRAME,
-                     CW_USEDEFAULT, CW_USEDEFAULT,
-                     s_.logical_to_pixels(kDefaultWidthPx),
-                     s_.logical_to_pixels(kDefaultHeightPx),
+                     fitted.x, fitted.y, fitted.w, fitted.h,
                      nullptr, nullptr})) {
             return false;
         }
@@ -302,14 +321,22 @@ protected:
                 dpi_ = LOWORD(w);
                 s_   = nfui::DpiScale(dpi_);
                 // Honor the suggested rect from lParam (per-monitor DPI
-                // contract). We keep NOMOVE because the OS already placed
-                // the window where it wants it.
+                // contract), clamped into the target monitor's work area —
+                // a scaled-up size could overflow a small display.
                 const RECT* suggested = reinterpret_cast<const RECT*>(l);
+                HMONITOR mon = MonitorFromWindow(hwnd(), MONITOR_DEFAULTTONEAREST);
+                MONITORINFO mi{.cbSize = sizeof(mi)};
+                GetMonitorInfoW(mon, &mi);
+                Rect fitted = fit_rect_in(
+                    {suggested->left, suggested->top,
+                     suggested->right - suggested->left,
+                     suggested->bottom - suggested->top},
+                    {mi.rcWork.left, mi.rcWork.top,
+                     mi.rcWork.right - mi.rcWork.left,
+                     mi.rcWork.bottom - mi.rcWork.top});
                 SetWindowPos(hwnd(), nullptr,
-                             0, 0,
-                             suggested->right  - suggested->left,
-                             suggested->bottom - suggested->top,
-                             SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE);
+                             fitted.x, fitted.y, fitted.w, fitted.h,
+                             SWP_NOZORDER | SWP_NOACTIVATE);
                 rebuild_layout();
                 refresh_hotkey_labels();
                 return 0;
@@ -372,152 +399,180 @@ private:
         controls_.clear();   // every owned HWND; old vectors are gone
         rename_index_ = -1;  // listbox indices are fresh after a rebuild
 
-        int x  = px(kLeftMargin);
-        int y  = px(kTopMargin);
-        int label_w = px(kLabelW);
-        int field_w = px(kFieldW);
-        int form_x  = x + label_w + px(kGapTight + 2);   // field column origin
-        int full_w  = label_w + px(kGapTight + 2) + field_w;
+        // Two-column grid: left = Display & Layout + Hotkeys (narrow),
+        // right = Processes + Startup & General (keeps the wide 360 field).
+        // Each column has its own y-cursor; the buttons row spans both.
+        int lx = px(kLeftMargin);                     // left column origin
+        int rx = lx + px(kLeftColW) + px(kColGap);    // right column origin
+        int ly = px(kTopMargin);
+        int ry = px(kTopMargin);
+        // Left column: label + field = kLeftColW.
+        int l_label_w = px(kLeftLabelW);
+        int l_field_w = px(kLeftColW) - l_label_w - px(kGapTight + 2);
+        int l_form_x  = lx + l_label_w + px(kGapTight + 2);
+        // Right column: label + field = kRightColW.
+        int r_label_w = px(kRightLabelW);
+        int r_field_w = px(kFieldW);
+        int r_form_x  = rx + r_label_w + px(kGapTight + 2);
 
-        // ============ Section: Display & Layout ==========================
-        add_section_header(x, y, full_w, L"Display & Layout", IDC_SECTION_DISPLAY);
-        y += px(kRowH) + px(kGapTight);
+        // ============ Left column =========================================
+        // ---- Section: Display & Layout ----------------------------------
+        add_section_header(lx, ly, px(kLeftColW), L"Display & Layout",
+                           IDC_SECTION_DISPLAY);
+        ly += px(kRowH) + px(kGapTight);
 
-        add_label(x, y, label_w, px(kRowH), L"Target &display", IDC_MONITOR_LABEL);
-        add_combo(form_x, y, field_w, IDC_MONITOR_COMBO, px(kComboDropHeight));
-        y += px(kRowH) + px(kGap);
+        add_label(lx, ly, l_label_w, px(kRowH), L"Target &display",
+                  IDC_MONITOR_LABEL);
+        add_combo(l_form_x, ly, l_field_w, IDC_MONITOR_COMBO,
+                  px(kComboDropHeight));
+        ly += px(kRowH) + px(kGap);
 
-        add_label(x, y, label_w, px(kRowH), L"&Padding (px)", IDC_PADDING_LABEL);
-        add_edit(form_x, y, px(kPaddingFieldW), px(kRowH), IDC_PADDING_EDIT);
-        add_hint(form_x, y + px(kRowH) + px(kGapTight), field_w,
+        add_label(lx, ly, l_label_w, px(kRowH), L"&Padding (px)",
+                  IDC_PADDING_LABEL);
+        add_edit(l_form_x, ly, px(kPaddingFieldW), px(kRowH), IDC_PADDING_EDIT);
+        add_hint(lx, ly + px(kRowH) + px(kGapTight), px(kLeftColW),
                  L"Gap around each tiled window. 0 = edge-to-edge.",
                  IDC_HINT_PADDING);
-        y += px(kRowH) + px(kGapTight) + px(kHintH * 2) + px(kGap);
+        ly += px(kRowH) + px(kGapTight) + px(kHintH * 2) + px(kGap);
 
-        // ============ Section: Processes ==================================
-        y += px(kGapSection);
-        add_section_header(x, y, full_w, L"Processes", IDC_SECTION_PROCESSES);
-        add_hint(form_x, y + px(kRowH) + px(kGapTight), field_w,
+        // ---- Section: Hotkeys -------------------------------------------
+        ly += px(kGapSection);
+        add_section_header(lx, ly, px(kLeftColW), L"Hotkeys", IDC_SECTION_HOTKEYS);
+        add_hint(lx, ly + px(kRowH) + px(kGapTight), px(kLeftColW),
+                 L"Click Capture, then press the key combination. Esc cancels.",
+                 IDC_HINT_HOTKEYS);
+        ly += px(kRowH) + px(kGapTight) + px(kHintH * 2) + px(kGapTight);
+
+        int cap_w  = px(kCaptureBtnW);
+        int disp_w = l_field_w - cap_w - px(kGapTight);
+        add_label(lx, ly, l_label_w, px(kRowH), L"&Tile now", IDC_HK_TILE_LABEL);
+        add_edit(l_form_x, ly, disp_w, px(kRowH), IDC_HK_TILE_DISPLAY, true);
+        add_button(l_form_x + disp_w + px(kGapTight), ly,
+                   cap_w, px(kRowH), L"Captur&e", IDC_HK_TILE_CAPTURE);
+        ly += px(kRowH) + px(kGap);
+
+        add_label(lx, ly, l_label_w, px(kRowH), L"Pa&use / resume",
+                  IDC_HK_PAUSE_LABEL);
+        add_edit(l_form_x, ly, disp_w, px(kRowH), IDC_HK_PAUSE_DISPLAY, true);
+        add_button(l_form_x + disp_w + px(kGapTight), ly,
+                   cap_w, px(kRowH), L"Capt&ure", IDC_HK_PAUSE_CAPTURE);
+        ly += px(kRowH) + px(kGap);
+
+        add_label(lx, ly, l_label_w, px(kRowH), L"Tile &first process",
+                  IDC_HK_TILESPEC_LABEL);
+        add_edit(l_form_x, ly, disp_w, px(kRowH), IDC_HK_TILESPEC_DISPLAY, true);
+        add_button(l_form_x + disp_w + px(kGapTight), ly,
+                   cap_w, px(kRowH), L"Cap&ture", IDC_HK_TILESPEC_CAPTURE);
+        ly += px(kRowH) + px(kGap);
+
+        add_label(lx, ly, l_label_w, px(kRowH), L"Pre&view tiling",
+                  IDC_HK_PREVIEW_LABEL);
+        add_edit(l_form_x, ly, disp_w, px(kRowH), IDC_HK_PREVIEW_DISPLAY, true);
+        add_button(l_form_x + disp_w + px(kGapTight), ly,
+                   cap_w, px(kRowH), L"Capt&ure", IDC_HK_PREVIEW_CAPTURE);
+        ly += px(kRowH) + px(kGap);
+
+        // ============ Right column ========================================
+        // ---- Section: Processes -----------------------------------------
+        add_section_header(rx, ry, px(kRightColW), L"Processes",
+                           IDC_SECTION_PROCESSES);
+        add_hint(rx, ry + px(kRowH) + px(kGapTight), px(kRightColW),
                  L"Matched by process name. Double-click a row to rename; "
                  L"drag to reorder.",
                  IDC_HINT_PROCESSES);
-        y += px(kRowH) + px(kGapTight) + px(kHintH * 2) + px(kGapTight);
+        ry += px(kRowH) + px(kGapTight) + px(kHintH * 2) + px(kGapTight);
 
         // Row A: free-text name + Add
-        add_edit(form_x, y, field_w - px(kAddBtnW) - px(kGapTight),
+        add_edit(r_form_x, ry, r_field_w - px(kAddBtnW) - px(kGapTight),
                  px(kRowH), IDC_PROC_NAME_EDIT);
-        add_button(form_x + field_w - px(kAddBtnW), y,
+        add_button(r_form_x + r_field_w - px(kAddBtnW), ry,
                    px(kAddBtnW), px(kRowH), L"&Add", IDC_PROC_NAME_ADD);
-        y += px(kRowH) + px(kGapTight);
+        ry += px(kRowH) + px(kGapTight);
 
         // Row A.5: filter the running-process picker (live substring filter)
-        add_label(x, y, label_w, px(kRowH), L"&Filter running",
+        add_label(rx, ry, r_label_w, px(kRowH), L"&Filter running",
                   IDC_PROC_FILTER_LABEL);
-        add_edit(form_x, y, field_w, px(kRowH), IDC_PROC_FILTER_EDIT);
-        y += px(kRowH) + px(kGapTight);
+        add_edit(r_form_x, ry, r_field_w, px(kRowH), IDC_PROC_FILTER_EDIT);
+        ry += px(kRowH) + px(kGapTight);
 
         // Row B: pick from running processes
-        int pick_w = field_w - px(kAddBtnW) - px(kBtnGap) - px(kRefreshBtnW) - px(kGapTight);
-        add_combo(form_x, y, pick_w, IDC_PROC_PICK_COMBO, px(kComboDropHeight));
-        add_button(form_x + pick_w + px(kGapTight), y,
-                   px(kRefreshBtnW), px(kRowH), L"&Refresh", IDC_PROC_PICK_REFRESH);
-        add_button(form_x + field_w - px(kAddBtnW), y,
+        int pick_w = r_field_w - px(kAddBtnW) - px(kBtnGap) - px(kRefreshBtnW) - px(kGapTight);
+        add_combo(r_form_x, ry, pick_w, IDC_PROC_PICK_COMBO,
+                  px(kComboDropHeight));
+        add_button(r_form_x + pick_w + px(kGapTight), ry,
+                   px(kRefreshBtnW), px(kRowH), L"&Refresh",
+                   IDC_PROC_PICK_REFRESH);
+        add_button(r_form_x + r_field_w - px(kAddBtnW), ry,
                    px(kAddBtnW), px(kRowH), L"A&dd", IDC_PROC_PICK_ADD);
-        y += px(kRowH) + px(kGap);
+        ry += px(kRowH) + px(kGap);
 
         // Row C: configured ListBox + Remove button to the right
-        int list_w = field_w - px(kAddBtnW) - px(kGapTight);
-        add_listbox(form_x, y, list_w, px(kProcListH), IDC_PROC_LIST);
-        add_button(form_x + list_w + px(kGapTight), y,
+        int list_w = r_field_w - px(kAddBtnW) - px(kGapTight);
+        add_listbox(r_form_x, ry, list_w, px(kProcListH), IDC_PROC_LIST);
+        add_button(r_form_x + list_w + px(kGapTight), ry,
                    px(kAddBtnW), px(kProcListH), L"&Remove", IDC_PROC_REMOVE);
-        y += px(kProcListH) + px(kGap);
+        ry += px(kProcListH) + px(kGap);
 
         // Per-row inspector: layout mode + monitor for the selected row.
         // Disabled when nothing is selected; LBN_SELCHANGE refreshes them
         // from live_rules_.
-        add_label(x, y, label_w, px(kRowH), L"La&yout", IDC_PROC_LAYOUT_LABEL);
-        add_combo(form_x, y, field_w, IDC_PROC_LAYOUT_COMBO, px(kComboDropHeight));
-        y += px(kRowH) + px(kGapTight);
+        add_label(rx, ry, r_label_w, px(kRowH), L"La&yout",
+                  IDC_PROC_LAYOUT_LABEL);
+        add_combo(r_form_x, ry, r_field_w, IDC_PROC_LAYOUT_COMBO,
+                  px(kComboDropHeight));
+        ry += px(kRowH) + px(kGapTight);
 
-        add_label(x, y, label_w, px(kRowH), L"Mo&nitor", IDC_PROC_MONITOR_LABEL);
-        add_combo(form_x, y, field_w, IDC_PROC_MONITOR_COMBO, px(kComboDropHeight));
-        y += px(kRowH) + px(kGapTight);
+        add_label(rx, ry, r_label_w, px(kRowH), L"Mo&nitor",
+                  IDC_PROC_MONITOR_LABEL);
+        add_combo(r_form_x, ry, r_field_w, IDC_PROC_MONITOR_COMBO,
+                  px(kComboDropHeight));
+        ry += px(kRowH) + px(kGapTight);
 
-        add_hint(form_x, y, field_w,
+        add_hint(rx, ry, px(kRightColW),
                  L"Applies to the process selected above.", IDC_HINT_INSPECTOR);
-        y += px(kHintH * 2) + px(kGap);
+        ry += px(kHintH * 2) + px(kGap);
 
-        // ============ Section: Hotkeys ====================================
-        y += px(kGapSection);
-        add_section_header(x, y, full_w, L"Hotkeys", IDC_SECTION_HOTKEYS);
-        add_hint(form_x, y + px(kRowH) + px(kGapTight), field_w,
-                 L"Click Capture, then press the key combination. Esc cancels.",
-                 IDC_HINT_HOTKEYS);
-        y += px(kRowH) + px(kGapTight) + px(kHintH * 2) + px(kGapTight);
+        // ---- Section: Startup & General ----------------------------------
+        ry += px(kGapSection);
+        add_section_header(rx, ry, px(kRightColW), L"Startup & General",
+                           IDC_SECTION_STARTUP);
+        ry += px(kRowH) + px(kGapTight);
 
-        int cap_w  = px(kCaptureBtnW);
-        int disp_w = field_w - cap_w - px(kGapTight);
-        add_label(x, y, label_w, px(kRowH), L"&Tile now", IDC_HK_TILE_LABEL);
-        add_edit(form_x, y, disp_w, px(kRowH), IDC_HK_TILE_DISPLAY, true);
-        add_button(form_x + disp_w + px(kGapTight), y,
-                   cap_w, px(kRowH), L"Captur&e", IDC_HK_TILE_CAPTURE);
-        y += px(kRowH) + px(kGap);
-
-        add_label(x, y, label_w, px(kRowH), L"Pa&use / resume", IDC_HK_PAUSE_LABEL);
-        add_edit(form_x, y, disp_w, px(kRowH), IDC_HK_PAUSE_DISPLAY, true);
-        add_button(form_x + disp_w + px(kGapTight), y,
-                   cap_w, px(kRowH), L"Capt&ure", IDC_HK_PAUSE_CAPTURE);
-        y += px(kRowH) + px(kGap);
-
-        add_label(x, y, label_w, px(kRowH), L"Tile &first process",
-                  IDC_HK_TILESPEC_LABEL);
-        add_edit(form_x, y, disp_w, px(kRowH), IDC_HK_TILESPEC_DISPLAY, true);
-        add_button(form_x + disp_w + px(kGapTight), y,
-                   cap_w, px(kRowH), L"Cap&ture", IDC_HK_TILESPEC_CAPTURE);
-        y += px(kRowH) + px(kGap);
-
-        add_label(x, y, label_w, px(kRowH), L"Pre&view tiling",
-                  IDC_HK_PREVIEW_LABEL);
-        add_edit(form_x, y, disp_w, px(kRowH), IDC_HK_PREVIEW_DISPLAY, true);
-        add_button(form_x + disp_w + px(kGapTight), y,
-                   cap_w, px(kRowH), L"Capt&ure", IDC_HK_PREVIEW_CAPTURE);
-        y += px(kRowH) + px(kGap);
-
-        // ============ Section: Startup & General ==========================
-        y += px(kGapSection);
-        add_section_header(x, y, full_w, L"Startup & General", IDC_SECTION_STARTUP);
-        y += px(kRowH) + px(kGapTight);
-
-        add_check(x, y, label_w + px(kGapTight + 2) + field_w, px(kRowH),
+        add_check(rx, ry, r_label_w + px(kGapTight + 2) + r_field_w, px(kRowH),
                   L"Start with &Windows (auto-launch at logon)",
                   IDC_AUTOSTART_CHECK);
-        y += px(kRowH) + px(kGap);
+        ry += px(kRowH) + px(kGap);
 
-        add_label(x, y, label_w, px(kRowH), L"&Start delay (sec)",
+        add_label(rx, ry, r_label_w, px(kRowH), L"&Start delay (sec)",
                   IDC_AUTOSTART_DELAY_LABEL);
-        add_edit(form_x, y, px(kPaddingFieldW), px(kRowH), IDC_AUTOSTART_DELAY_EDIT);
-        add_hint(form_x, y + px(kRowH) + px(kGapTight), field_w,
+        add_edit(r_form_x, ry, px(kPaddingFieldW), px(kRowH),
+                 IDC_AUTOSTART_DELAY_EDIT);
+        add_hint(rx, ry + px(kRowH) + px(kGapTight), px(kRightColW),
                  L"Seconds to wait before the first auto-tile after "
                  L"autostart. 0 = off.",
                  IDC_HINT_START_DELAY);
-        y += px(kRowH) + px(kGapTight) + px(kHintH * 2) + px(kGap);
+        ry += px(kRowH) + px(kGapTight) + px(kHintH * 2) + px(kGap);
 
-        add_label(x, y, label_w, px(kRowH), L"&Log level", IDC_LOGLEVEL_LABEL);
-        add_combo(form_x, y, px(kLogLevelComboW),
+        add_label(rx, ry, r_label_w, px(kRowH), L"&Log level",
+                  IDC_LOGLEVEL_LABEL);
+        add_combo(r_form_x, ry, px(kLogLevelComboW),
                   IDC_LOGLEVEL_COMBO, px(kComboDropHeight));
-        y += px(kRowH) + px(kGap);
+        ry += px(kRowH) + px(kGap);
 
         // Config file (export / import)
-        add_label(x, y, label_w, px(kRowH), L"Config &file", IDC_CFGFILE_LABEL);
-        add_button(form_x, y, px(kExportBtnW), px(kRowH),
+        add_label(rx, ry, r_label_w, px(kRowH), L"Config &file",
+                  IDC_CFGFILE_LABEL);
+        add_button(r_form_x, ry, px(kExportBtnW), px(kRowH),
                    L"Export...", IDC_EXPORT_CONFIG_BTN);
-        add_button(form_x + px(kExportBtnW) + px(kBtnGap), y, px(kImportBtnW),
+        add_button(r_form_x + px(kExportBtnW) + px(kBtnGap), ry, px(kImportBtnW),
                    px(kRowH), L"Import...", IDC_IMPORT_CONFIG_BTN);
-        y += px(kRowH) + px(kGapBeforeButton);
+        ry += px(kRowH) + px(kGapBeforeButton);
 
-        // -- Buttons row --------------------------------------------------
+        // -- Buttons row (spans both columns) ------------------------------
+        int x = lx;
+        int y = std::max(ly, ry);
         int btn_h = px(kRowH) + px(kGapTight);
-        int right = x + label_w + px(kGapTight + 2) + field_w;
+        int right = r_form_x + r_field_w;
         add_button(x, y, px(kOpenCfgBtnW), btn_h, L"Open &config file...",
                    IDC_OPEN_CONFIG_BTN);
         add_button(right - 2 * px(kAddBtnW) - px(kBtnGap), y, px(kAddBtnW), btn_h,

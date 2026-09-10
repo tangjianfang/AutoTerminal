@@ -13,9 +13,12 @@ fit. The form reads as one long unstructured scroll.
 
 ### Two-column layout
 
-Dialog grows from 580 × 930 to **880 × 560** logical px (100 % DPI
-baseline). At 125 % scale that is 1100 × 700 physical — fits 1366 × 768
-work area (~720 px tall).
+Dialog grows from 580 × 930 to **896 × 612** logical px (100 % DPI
+baseline; window size — the content needs an 880 × 572 *client* and the
+modal frame eats 16 × 39 px, verified by `scripts/verify_settings_layout.ps1`).
+At 100 % on 1366 × 768 (work area ≈ 728 px tall) it fits with ~116 px slack;
+at 125 % on such screens the `fit_rect_in` clamp shrinks the window to the
+work area (worst case the bottom margin tightens).
 
 ```
 +--------------------------------------------------------------+

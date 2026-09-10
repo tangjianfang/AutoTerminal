@@ -54,3 +54,5 @@ Key invariant: window lists in the tile pass are keyed by **rule index** (index 
 ## Diagnostic scripts
 
 `scripts/*.ps1` (run with `powershell -ExecutionPolicy Bypass -File scripts\<name>.ps1`): `probe_windows.ps1` (message/settings window + control counts), `probe_settings_pos.ps1` (dialog rect + foreground), `simulate_rightclick.ps1` (posts `WM_AT_TRAYICON`/`WM_RBUTTONUP` to test tray dispatch without clicking). Useful for verifying tray/UI behavior of the running daemon.
+
+**Verification policy:** do NOT use screenshot/image recognition for automated verification. Verify UI via geometry probes (`scripts/verify_settings_layout.ps1` asserts containment, no-overlap, and two-column separation over every child control), behavior via `%APPDATA%\AutoTerminal\autoterminal.log`, and logic via unit tests + code analysis.
